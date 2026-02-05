@@ -14,9 +14,11 @@ cdef extern from "string.h":
     void memcpy(void* des, void* src, int size)
 
 from libcpp.algorithm cimport sort
-from cython.operator cimport dereference as deref
+from cython.operator cimport dereference as deref, preincrement as inc
 from libcpp.pair cimport pair
 from libcpp.vector cimport vector
+from libcpp.set cimport set as cset
+from libcpp.map cimport map as cmap
 
 
 ctypedef float hyp
@@ -29,6 +31,95 @@ cdef unsigned int hyp_size = calcsize(hyp_symbol)
 
 
 cdef unsigned int SERIALIZATION_VERSION = 2
+
+
+
+### The Ben zone
+
+
+cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n):
+    """
+    Return approximate nearest neighbours to point x from the model.
+    Uses the MTQ technique.
+    """
+
+    cdef unsigned int i
+    cdef unsigned int dim, no_returns
+    cdef unsigned int num_roots = len(trees)
+
+    cdef cnp.ndarray[int, ndim=1] result
+    cdef cmap[int, double] internal_candidates
+ 
+    dim = X.shape[1]
+
+    for i in range(num_roots):
+        _get_candidates_at_tree_i(x, X, trees, dim, i, &internal_candidates)
+
+    no_returns = min(n, internal_candidates.size())
+
+    result = np.empty(no_returns, dtype=np.int32)
+
+    cdef vector[pair[double, int]] scores
+    cdef cmap[int, double].iterator it
+
+    scores.reserve(internal_candidates.size())
+    it = internal_candidates.begin()
+    while it != internal_candidates.end():
+        scores.push_back(pair[double, int](deref(it).second, deref(it).first))
+        inc(it)
+
+    sort(scores.begin(), scores.end())
+
+    for i in range(no_returns):
+        result[i] = scores[i].second
+
+    return result
+
+cdef void _get_candidates_at_tree_i(double[::1] x, double[:, ::1] X, list roots, int dim, unsigned int i, cmap[int, double] *internal_candidates):
+    """
+    Get all memebers of x's leaf nodes.
+    Same as original definition, but passes in i
+    Also needs internal_candidates, which is a set of (double, int)
+    """
+
+    cdef unsigned int no_roots = len(roots)
+    cdef Tree tree
+    cdef Node *root
+    cdef Node *leaf
+
+    tree = roots[i]
+    root = tree.root
+    leaf = query(root, tree.hyperplanes, x)
+
+    sort_candidates_mtq(x, X, dim, leaf.indices, internal_candidates)
+
+cdef void sort_candidates_mtq(double[::1] x,
+                                double[:, ::1] X,
+                                unsigned int dim,
+                                vector[int] *candidates,
+                                cmap[int, double] *internal_candidates) nogil:
+    """
+    Perform final cosine similarity sorting step on merged candidates.
+    """
+
+    cdef unsigned int i, j, no_candidates
+    cdef int idx
+    cdef double dst
+
+    no_candidates = candidates.size()
+
+    for i in range(no_candidates):
+
+        idx = deref(candidates)[i]
+
+        # If not in internal_candidates
+        if deref(internal_candidates).find(idx) == deref(internal_candidates).end():
+            dst = 0.0
+            for j in range(dim):
+                dst -= x[j] * X[idx, j]
+            deref(internal_candidates)[idx] = dst
+
+### End Ben zone
 
 
 
@@ -116,6 +207,7 @@ cpdef query_all(double[::1] x, double[:, ::1] X, list trees, unsigned int n):
 
     candidates = _get_candidates(x, trees, dim)
     scores = sort_candidates(x, X, dim, candidates)
+
     no_returns = min(n, scores.size())
 
     result = np.empty(no_returns, dtype=np.int32)

@@ -14,10 +14,12 @@ cdef extern from "string.h":
     void memcpy(void* des, void* src, int size)
 
 from libcpp.algorithm cimport sort
-from cython.operator cimport dereference as deref, preincrement as inc
+from cython.operator cimport dereference as deref, preincrement as inc, predecrement as dec
 from libcpp.pair cimport pair
 from libcpp.vector cimport vector
 from libcpp.set cimport set as cset
+from libcpp.unordered_set cimport unordered_set
+from libcpp.queue cimport priority_queue
 from libcpp.map cimport map as cmap
 
 
@@ -36,46 +38,98 @@ cdef unsigned int SERIALIZATION_VERSION = 2
 
 ### The Ben zone
 
+cdef void add_vectors_inplace(double[::1] vec1, double[::1] vec2, unsigned int dim) nogil:
+    """
+    Add vec2 to vec1 in-place.
+    """
+    cdef unsigned int i
+    
+    for i in range(dim):
+        vec1[i] += vec2[i]
 
-cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n):
+cdef inline double l2_norm(double[::1] vec, unsigned int dim) nogil:
+    """
+    Compute the L2 (Euclidean) norm of a vector.
+    """
+    cdef unsigned int i
+    cdef double result = 0.0
+    
+    for i in range(dim):
+        result += vec[i] * vec[i]
+    
+    return result ** 0.5
+
+cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n, unsigned int warmup):
     """
     Return approximate nearest neighbours to point x from the model.
     Uses the MTQ technique.
     """
-
     cdef unsigned int i
     cdef unsigned int dim, no_returns
     cdef unsigned int num_roots = len(trees)
 
     cdef cnp.ndarray[int, ndim=1] result
-    cdef cmap[int, double] internal_candidates
+    cdef unordered_set[int] seen_ids
+
+    cdef cset[pair[double, int]] internal_candidates
+
+    cdef cnp.ndarray[double, ndim=1] q_prime = np.copy(x)
+
+    cdef unordered_set[int] removed_this_iter;
+    cdef unordered_set[int] added_this_iter;
+
  
     dim = X.shape[1]
 
     for i in range(num_roots):
-        _get_candidates_at_tree_i(x, X, trees, dim, i, &internal_candidates)
+        # Clear the sets
+        added_this_iter.clear()
+        removed_this_iter.clear()
+
+        # Add new things to candidate
+        _get_candidates_at_tree_i(q_prime, x, X, trees, dim, n, i, &seen_ids, &added_this_iter, &removed_this_iter, &internal_candidates)        
+
+        # Move the query if we need to
+        if i >= warmup:
+            if removed_this_iter.size() > (n / 2) or i == warmup:
+                # Do full computation
+                q_prime *= 0
+
+                for candidate in internal_candidates:
+                    q_prime += X[candidate.second, :]
+            else:
+                # Incrementally update q_prime
+                for idx in added_this_iter:
+                    q_prime += X[idx, :]
+
+                for idx in removed_this_iter:
+                    q_prime -= X[idx, :]
 
     no_returns = min(n, internal_candidates.size())
-
     result = np.empty(no_returns, dtype=np.int32)
 
-    cdef vector[pair[double, int]] scores
-    cdef cmap[int, double].iterator it
-
-    scores.reserve(internal_candidates.size())
-    it = internal_candidates.begin()
-    while it != internal_candidates.end():
-        scores.push_back(pair[double, int](deref(it).second, deref(it).first))
-        inc(it)
-
-    sort(scores.begin(), scores.end())
-
-    for i in range(no_returns):
-        result[i] = scores[i].second
+    i = 0
+    for candidate in internal_candidates:
+        if i >= no_returns:
+            break
+        result[i] = candidate.second
+        i += 1
 
     return result
 
-cdef void _get_candidates_at_tree_i(double[::1] x, double[:, ::1] X, list roots, int dim, unsigned int i, cmap[int, double] *internal_candidates):
+    
+
+cdef void _get_candidates_at_tree_i(double[::1] q_prime,
+                                double[::1] original_query,
+                                double[:, ::1] X,
+                                list roots,
+                                int dim,
+                                unsigned int n, 
+                                unsigned int i,
+                                unordered_set[int] *seen_ids,
+                                unordered_set[int] *added_this_iter,
+                                unordered_set[int] *removed_this_iter,
+                                cset[pair[double, int]] *internal_candidates):
     """
     Get all memebers of x's leaf nodes.
     Same as original definition, but passes in i
@@ -89,36 +143,57 @@ cdef void _get_candidates_at_tree_i(double[::1] x, double[:, ::1] X, list roots,
 
     tree = roots[i]
     root = tree.root
-    leaf = query(root, tree.hyperplanes, x)
+    leaf = query(root, tree.hyperplanes, q_prime)
 
-    sort_candidates_mtq(x, X, dim, leaf.indices, internal_candidates)
+    sort_candidates_mtq(original_query, X, dim, n, leaf.indices, seen_ids, added_this_iter, removed_this_iter, internal_candidates)
 
-cdef void sort_candidates_mtq(double[::1] x,
+cdef void sort_candidates_mtq(
+                                double[::1] original_query,
                                 double[:, ::1] X,
                                 unsigned int dim,
+                                unsigned int n,
                                 vector[int] *candidates,
-                                cmap[int, double] *internal_candidates) nogil:
+                                unordered_set[int] *seen_ids,
+                                unordered_set[int] *added_this_iter,
+                                unordered_set[int] *removed_this_iter,
+                                cset[pair[double, int]] *internal_candidates):
     """
     Perform final cosine similarity sorting step on merged candidates.
     """
-
     cdef unsigned int i, j, no_candidates
     cdef int idx
     cdef double dst
+    cdef cset[pair[double, int]].iterator last_it
 
     no_candidates = candidates.size()
 
     for i in range(no_candidates):
-
         idx = deref(candidates)[i]
 
-        # If not in internal_candidates
-        if deref(internal_candidates).find(idx) == deref(internal_candidates).end():
+        # If not in seen_ids
+        if deref(seen_ids).find(idx) == deref(seen_ids).end():
             dst = 0.0
             for j in range(dim):
-                dst -= x[j] * X[idx, j]
-            deref(internal_candidates)[idx] = dst
+                dst -= original_query[j] * X[idx, j]
 
+            # If this is smaller than our frutherst thing or we don't have enough points
+            if deref(internal_candidates).size() < n or dst < deref(deref(internal_candidates).rbegin()).first:
+                deref(internal_candidates).insert(pair[double, int](dst, idx))
+                deref(added_this_iter).insert(idx)
+
+                if deref(internal_candidates).size() > n:
+                    # Get the last element (largest distance) - sets are ordered, so last element has max key
+                    last_it = deref(internal_candidates).end()
+                    dec(last_it)  # Decrement iterator to get last valid element
+
+                    # Add to popped
+                    deref(removed_this_iter).insert(deref(last_it).second)
+                    
+                    # Remove the last element
+                    deref(internal_candidates).erase(last_it)
+
+            deref(seen_ids).insert(idx)
+    
 ### End Ben zone
 
 

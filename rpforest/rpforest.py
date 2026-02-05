@@ -148,7 +148,7 @@ class RPForest(object):
 
         return query_all(x, self._X, self.trees, number)
     
-    def query_mtq(self, x, number=10, normalise=True):
+    def query_mtq(self, x, number=10, warmup=6, normalise=True):
         """
         Return nearest neighbours for vector x by first retrieving
         candidate NNs from x's leaf nodes, then merging them
@@ -175,7 +175,7 @@ class RPForest(object):
         if normalise:
             x = x / np.linalg.norm(x)
 
-        return query_all_mtq(x, self._X, self.trees, number)
+        return query_all_mtq(x, self._X, self.trees, number, warmup)
 
     def get_candidates(self, x, number=10, normalise=True):
         """

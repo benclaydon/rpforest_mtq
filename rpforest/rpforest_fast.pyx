@@ -72,7 +72,6 @@ cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n,
     cdef unordered_set[int] seen_ids
 
     cdef cset[pair[double, int]] internal_candidates
-
     cdef cnp.ndarray[double, ndim=1] q_prime = np.copy(x)
 
     cdef unordered_set[int] removed_this_iter;
@@ -87,11 +86,11 @@ cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n,
         removed_this_iter.clear()
 
         # Add new things to candidate
-        _get_candidates_at_tree_i(q_prime, x, X, trees, dim, n, i, &seen_ids, &added_this_iter, &removed_this_iter, &internal_candidates)        
+        _get_candidates_at_tree_i(q_prime / l2_norm(q_prime, dim), x, X, trees, dim, n, i, &seen_ids, &added_this_iter, &removed_this_iter, &internal_candidates)        
 
         # Move the query if we need to
         if i >= warmup:
-            if removed_this_iter.size() > (n / 2) or i == warmup:
+            if True or removed_this_iter.size() > (n / 2) or i == warmup:
                 # Do full computation
                 q_prime *= 0
 

@@ -138,25 +138,34 @@ cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n,
 
     cdef unordered_set[int] removed_this_iter;
     cdef unordered_set[int] added_this_iter;
+    
+    # Store tree pointers for nogil access
+    cdef Node **tree_roots = <Node**>malloc(num_roots * sizeof(Node*))
+    cdef Hyperplanes **tree_hyperplanes = <Hyperplanes**>malloc(num_roots * sizeof(Hyperplanes*))
+    cdef Tree tree
+    
+    for i in range(num_roots):
+        tree = trees[i]
+        tree_roots[i] = tree.root
+        tree_hyperplanes[i] = tree.hyperplanes
  
     dim = X.shape[1]
 
-    for i in range(num_roots):
-        # Clear the sets
-        added_this_iter.clear()
-        removed_this_iter.clear()
+    # Entire loop now runs in nogil context
+    with nogil:
+        for i in range(num_roots):
+            # Clear the sets
+            added_this_iter.clear()
+            removed_this_iter.clear()
 
-        # Normalize q_prime for tree query
-        with nogil:
+            # Normalize q_prime for tree query and get candidates
             q_normalized_view[:] = q_prime_view
             normalize_vector(q_normalized_view, dim)
-
-        # Add new things to candidate
-        _get_candidates_at_tree_i(q_normalized_view, x, X, trees, dim, n, i, &seen_ids, &added_this_iter, &removed_this_iter, &internal_candidates)        
-
-        # Move the query if we need to
-        with nogil:
+            _get_candidates_at_tree_i_nogil(q_normalized_view, x, X, tree_roots[i], tree_hyperplanes[i], dim, n, &seen_ids, &added_this_iter, &removed_this_iter, &internal_candidates)
             update_query_prime_nogil(q_prime_view, X, dim, n, warmup, i, &added_this_iter, &removed_this_iter, &internal_candidates)
+    
+    free(tree_roots)
+    free(tree_hyperplanes)
 
     no_returns = min(n, internal_candidates.size())
     result = np.empty(no_returns, dtype=np.int32)
@@ -172,29 +181,46 @@ cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n,
 
     
 
-cdef void _get_candidates_at_tree_i(double[::1] q_prime,
+cdef void _get_candidates_at_tree_i_nogil(double[::1] q_prime,
                                 double[::1] original_query,
                                 double[:, ::1] X,
-                                list roots,
+                                Node *root,
+                                Hyperplanes *hyperplanes,
                                 int dim,
-                                unsigned int n, 
-                                unsigned int i,
+                                unsigned int n,
                                 unordered_set[int] *seen_ids,
                                 unordered_set[int] *added_this_iter,
                                 unordered_set[int] *removed_this_iter,
-                                cset[pair[double, int]] *internal_candidates):
+                                cset[pair[double, int]] *internal_candidates) nogil:
     """
-    Get all memebers of x's leaf nodes.
-    Same as original definition, but passes in i
-    Also needs internal_candidates, which is a set of (double, int)
+    Get all members of x's leaf nodes.
+    Accepts raw pointers for nogil compatibility.
     """
 
-    cdef unsigned int no_roots = len(roots)
-    cdef Tree tree
+    cdef Node *leaf
+
+    leaf = query(root, hyperplanes, q_prime)
+
+    sort_candidates_mtq(original_query, X, dim, n, leaf.indices, seen_ids, added_this_iter, removed_this_iter, internal_candidates)
+
+cdef void _get_candidates_at_tree_i(double[::1] q_prime,
+                                double[::1] original_query,
+                                double[:, ::1] X,
+                                Tree tree,
+                                int dim,
+                                unsigned int n,
+                                unordered_set[int] *seen_ids,
+                                unordered_set[int] *added_this_iter,
+                                unordered_set[int] *removed_this_iter,
+                                cset[pair[double, int]] *internal_candidates) nogil:
+    """
+    Get all members of x's leaf nodes.
+    Now accepts a Tree object directly and runs with nogil.
+    """
+
     cdef Node *root
     cdef Node *leaf
 
-    tree = roots[i]
     root = tree.root
     leaf = query(root, tree.hyperplanes, q_prime)
 
@@ -209,7 +235,7 @@ cdef void sort_candidates_mtq(
                                 unordered_set[int] *seen_ids,
                                 unordered_set[int] *added_this_iter,
                                 unordered_set[int] *removed_this_iter,
-                                cset[pair[double, int]] *internal_candidates):
+                                cset[pair[double, int]] *internal_candidates) nogil:
     """
     Perform final cosine similarity sorting step on merged candidates.
     """
@@ -848,7 +874,7 @@ cdef long get_size(Node *node) nogil:
     return size
 
 
-cdef Node* query(Node *node, Hyperplanes* hyper, double[::1] x):
+cdef Node* query(Node *node, Hyperplanes* hyper, double[::1] x) nogil:
     """
     Recursively query the node and its children.
     """

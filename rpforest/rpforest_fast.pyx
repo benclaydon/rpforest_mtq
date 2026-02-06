@@ -59,6 +59,65 @@ cdef inline double l2_norm(double[::1] vec, unsigned int dim) nogil:
     
     return result ** 0.5
 
+cdef inline void normalize_vector(double[::1] vec, unsigned int dim) nogil:
+    """
+    Normalize a vector in-place by its L2 norm.
+    """
+    cdef unsigned int i
+    cdef double norm = l2_norm(vec, dim)
+    
+    if norm > 0.0:
+        for i in range(dim):
+            vec[i] /= norm
+
+cdef inline void zero_vector(double[::1] vec, unsigned int dim) nogil:
+    """
+    Zero out a vector in-place.
+    """
+    cdef unsigned int i
+    for i in range(dim):
+        vec[i] = 0.0
+
+cdef inline void subtract_vectors_inplace(double[::1] vec1, double[::1] vec2, unsigned int dim) nogil:
+    """
+    Subtract vec2 from vec1 in-place.
+    """
+    cdef unsigned int i
+    for i in range(dim):
+        vec1[i] -= vec2[i]
+
+cdef void update_query_prime_nogil(double[::1] q_prime,
+                                    double[:, ::1] X,
+                                    unsigned int dim,
+                                    unsigned int n,
+                                    unsigned int warmup,
+                                    unsigned int i,
+                                    unordered_set[int] *added_this_iter,
+                                    unordered_set[int] *removed_this_iter,
+                                    cset[pair[double, int]] *internal_candidates) nogil:
+    """
+    Update q_prime vector efficiently with nogil.
+    """
+    cdef int idx
+    cdef cset[pair[double, int]].iterator it
+    
+    if i >= warmup:
+        if deref(removed_this_iter).size() > (n / 2) or i == warmup:
+            # Do full computation
+            zero_vector(q_prime, dim)
+            
+            it = deref(internal_candidates).begin()
+            while it != deref(internal_candidates).end():
+                add_vectors_inplace(q_prime, X[deref(it).second, :], dim)
+                inc(it)
+        else:
+            # Incrementally update q_prime
+            for idx in deref(added_this_iter):
+                add_vectors_inplace(q_prime, X[idx, :], dim)
+            
+            for idx in deref(removed_this_iter):
+                subtract_vectors_inplace(q_prime, X[idx, :], dim)
+
 cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n, unsigned int warmup):
     """
     Return approximate nearest neighbours to point x from the model.
@@ -73,10 +132,12 @@ cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n,
 
     cdef cset[pair[double, int]] internal_candidates
     cdef cnp.ndarray[double, ndim=1] q_prime = np.copy(x)
+    cdef double[::1] q_prime_view = q_prime
+    cdef cnp.ndarray[double, ndim=1] q_normalized = np.empty(x.shape[0], dtype=np.float64)
+    cdef double[::1] q_normalized_view = q_normalized
 
     cdef unordered_set[int] removed_this_iter;
     cdef unordered_set[int] added_this_iter;
-
  
     dim = X.shape[1]
 
@@ -85,24 +146,17 @@ cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n,
         added_this_iter.clear()
         removed_this_iter.clear()
 
+        # Normalize q_prime for tree query
+        with nogil:
+            q_normalized_view[:] = q_prime_view
+            normalize_vector(q_normalized_view, dim)
+
         # Add new things to candidate
-        _get_candidates_at_tree_i(q_prime / l2_norm(q_prime, dim), x, X, trees, dim, n, i, &seen_ids, &added_this_iter, &removed_this_iter, &internal_candidates)        
+        _get_candidates_at_tree_i(q_normalized_view, x, X, trees, dim, n, i, &seen_ids, &added_this_iter, &removed_this_iter, &internal_candidates)        
 
         # Move the query if we need to
-        if i >= warmup:
-            if True or removed_this_iter.size() > (n / 2) or i == warmup:
-                # Do full computation
-                q_prime *= 0
-
-                for candidate in internal_candidates:
-                    q_prime += X[candidate.second, :]
-            else:
-                # Incrementally update q_prime
-                for idx in added_this_iter:
-                    q_prime += X[idx, :]
-
-                for idx in removed_this_iter:
-                    q_prime -= X[idx, :]
+        with nogil:
+            update_query_prime_nogil(q_prime_view, X, dim, n, warmup, i, &added_this_iter, &removed_this_iter, &internal_candidates)
 
     no_returns = min(n, internal_candidates.size())
     result = np.empty(no_returns, dtype=np.int32)

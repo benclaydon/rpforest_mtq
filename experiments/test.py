@@ -7,7 +7,7 @@ def get_mf_dino2():
     data = np.zeros((0, 384), dtype=np.float32)
 
     # Load Dino2
-    for i in range(25):
+    for i in range(100):
         fp = loadmat(f"/Volumes/Data/mf_dino2/{i}.mat")['features']
         fp /= np.linalg.norm(fp, axis=1, keepdims=True)
         data = np.vstack((data, fp))
@@ -16,10 +16,10 @@ def get_mf_dino2():
 
 data = get_mf_dino2()
 
-model = RPForest(leaf_size=500, no_trees=16)
+model = RPForest(leaf_size=250, no_trees=16)
 model.fit(data)
 
-num_queries = 10
+num_queries = 50
 query_indices = np.random.choice(len(data), num_queries, replace=False)
 
 for i, query_idx in enumerate(query_indices):

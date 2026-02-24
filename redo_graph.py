@@ -13,7 +13,9 @@ def save_graph(out_path, static_recalls, dynamic_recalls, static_times, dynamic_
     plt.grid(True, alpha=0.3, which='both')
     plt.minorticks_on()
     
-    plt.ylim(bottom=10**1.6)
+    # plt.ylim(bottom=10**1.3, top=10**3)
+    plt.xlim(left=0, right=1)
+
     
     plt.xlabel("Recall")
     plt.ylabel("Queries per Second")

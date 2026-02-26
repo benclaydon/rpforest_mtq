@@ -16,7 +16,8 @@ GLOVE = "glove"
 GOOAQ = "gooaq"
 UNIFORM = "uniform"
 LAION = "laion"
-AVAILABLE_DATASETS = [MF_DINO2, GLOVE, GOOAQ, UNIFORM, LAION]
+PUBMED = "pubmed"
+AVAILABLE_DATASETS = [MF_DINO2, GLOVE, GOOAQ, UNIFORM, LAION, PUBMED]
 
 K = 20
 
@@ -29,6 +30,17 @@ def get_mf_dino2():
         fp /= np.linalg.norm(fp, axis=1, keepdims=True)
         data = np.vstack((data, fp))
         
+    data = np.ascontiguousarray(data, dtype=np.double)
+    return data
+
+def get_pubmed():
+    with h5py.File("/Volumes/Data/pubmed/first-1m.h5", "r") as f:
+        data = f["train"][:1_000_000]
+    data = data.astype(np.float32)
+    data /= np.linalg.norm(data, axis=1, keepdims=True)
+    
+    print(f"PUBMED is {data.shape}")
+    
     data = np.ascontiguousarray(data, dtype=np.double)
     return data
 
@@ -245,5 +257,7 @@ if __name__ == "__main__":
         run_experiments(dataset, n_queries, get_laion(), start_blocks, end_blocks, step, inertia, partial_polys, out_path)
     elif dataset == UNIFORM:
         run_experiments(dataset, n_queries, get_uniform(), start_blocks, end_blocks, step, inertia, partial_polys, out_path)
+    elif dataset == PUBMED:
+        run_experiments(dataset, n_queries, get_pubmed(), start_blocks, end_blocks, step, inertia, partial_polys, out_path)
     else:
         raise RuntimeError(f"Unknown dataset. Datasets are: {AVAILABLE_DATASETS}")

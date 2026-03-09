@@ -3,10 +3,17 @@ import json
 import numpy as np
 from matplotlib import pyplot as plt
 
+from aquarel import load_theme
 
-def save_graph(out_path, static_recalls, dynamic_recalls, static_times, dynamic_times):
+
+
+def save_graph(out_path, static_recalls, dynamic_recalls, ouroboros_recalls, static_times, dynamic_times, ouroboros_times):
+    theme = load_theme("scientific")
+    theme.apply()
+
     plt.plot(static_recalls, static_times, label="RP-Forest")
     plt.plot(dynamic_recalls, dynamic_times, label="MQ-Forest")
+    plt.plot(ouroboros_recalls, ouroboros_times, label="Ouroboros")
     
     plt.yscale('log')
     
@@ -20,6 +27,8 @@ def save_graph(out_path, static_recalls, dynamic_recalls, static_times, dynamic_
     plt.xlabel("Recall")
     plt.ylabel("Queries per Second")
     
+    theme.apply_transforms()
+
     plt.legend()
     plt.savefig(out_path)
     plt.close()
@@ -39,11 +48,13 @@ def main():
     # Extract data arrays
     static_recalls = np.array(data['static_recalls'])
     dynamic_recalls = np.array(data['dynamic_recalls'])
+    ouroboros_recalls = np.array(data['ouroboros_recalls'])
     static_qps = np.array(data['static_qps'])
     dynamic_qps = np.array(data['dynamic_qps'])
+    ouroboros_qps = np.array(data['ouroboros_qps'])
     
     # Generate graph
-    save_graph(args.output_file, static_recalls, dynamic_recalls, static_qps, dynamic_qps)
+    save_graph(args.output_file, static_recalls, dynamic_recalls, ouroboros_recalls, static_qps, dynamic_qps, ouroboros_qps)
     
     print(f"Graph saved to {args.output_file}")
 

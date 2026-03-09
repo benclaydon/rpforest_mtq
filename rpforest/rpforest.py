@@ -2,7 +2,7 @@ from __future__ import absolute_import
 
 import numpy as np
 
-from rpforest.rpforest_fast import Tree, query_all, query_all_mtq, encode_all, get_candidates_all
+from rpforest.rpforest_fast import Tree, query_all, query_all_mtq, query_all_mtq_loops, encode_all, get_candidates_all
 
 
 SERIALIZATION_VERSION = 2
@@ -179,6 +179,36 @@ class RPForest(object):
             x = x / np.linalg.norm(x)
 
         return query_all_mtq(x, self._X, self.trees, number, warmup)
+
+
+    def query_mtq_ouroboros(self, x, number=10, warmup=6, patience=3, normalise=True):
+        """
+        Return nearest neighbours for vector x by first retrieving
+        candidate NNs from x's leaf nodes, then merging them
+        and sorting by cosine similarity with x.
+
+        Vectors for each point must be available.
+
+        At most no_trees * leaf_size NNs will can be returned.
+
+        Arguments:
+        - np.float64 vector x [dim]
+        - optional int number: number of candidates to return.
+        """
+
+        if not self._is_constructed():
+            raise Exception("Tree has not been fit")
+
+        if not self._has_vectors():
+            raise Exception("No point vectors found.")
+
+        assert self._X.shape[1] == self.dim
+        assert len(x) == self.dim
+
+        if normalise:
+            x = x / np.linalg.norm(x)
+
+        return query_all_mtq_loops(x, self._X, self.trees, number, warmup, patience)
 
     def get_candidates(self, x, number=10, normalise=True):
         """

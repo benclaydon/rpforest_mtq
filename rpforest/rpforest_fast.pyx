@@ -180,6 +180,85 @@ cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n,
     return result
     
 
+cpdef query_all_mtq_loops(double[::1] x, double[:, ::1] X, list trees, unsigned int n, unsigned int warmup, unsigned int patience):
+    """
+    Return approximate nearest neighbours to point x.
+    Uses the MTQ technique.
+    Also uses Ouroboros style looping.
+    """
+    cdef unsigned int i
+    cdef unsigned int dim, no_returns
+    cdef unsigned int num_roots = len(trees)
+
+    cdef unsigned int current_tree = 0
+    cdef unsigned int trees_since_result = 0
+
+    cdef cnp.ndarray[int, ndim=1] result
+    cdef unordered_set[int] seen_ids
+
+    cdef cset[pair[double, int]] internal_candidates
+    cdef cnp.ndarray[double, ndim=1] q_prime = np.copy(x)
+    cdef double[::1] q_prime_view = q_prime
+    cdef cnp.ndarray[double, ndim=1] q_normalized = np.empty(x.shape[0], dtype=np.float64)
+    cdef double[::1] q_normalized_view = q_normalized
+
+    cdef unordered_set[int] removed_this_iter;
+    cdef unordered_set[int] added_this_iter;
+    
+    # Store tree pointers for nogil access
+    cdef Node **tree_roots = <Node**>malloc(num_roots * sizeof(Node*))
+    cdef Hyperplanes **tree_hyperplanes = <Hyperplanes**>malloc(num_roots * sizeof(Hyperplanes*))
+    cdef Tree tree
+    
+    for i in range(num_roots):
+        tree = trees[i]
+        tree_roots[i] = tree.root
+        tree_hyperplanes[i] = tree.hyperplanes
+ 
+    dim = X.shape[1]
+
+
+    # Entire loop now runs in nogil context
+    with nogil:
+        # If we have not yet seen all trees, or we are still getting results:
+        while current_tree < num_roots or trees_since_result <= patience:
+            i = current_tree % num_roots
+
+            # Clear the sets
+            added_this_iter.clear()
+            removed_this_iter.clear()
+
+            # Normalize q_prime for tree query and get candidates
+            q_normalized_view[:] = q_prime_view
+            normalize_vector(q_normalized_view, dim)
+            
+            _get_candidates_at_tree_i_nogil(q_normalized_view, x, X, tree_roots[i], tree_hyperplanes[i], dim, n, &seen_ids, &added_this_iter, &removed_this_iter, &internal_candidates)
+
+            # Check if we have any new results
+            if added_this_iter.size() == 0:
+                trees_since_result += 1
+            else:
+                trees_since_result = 0
+
+            update_query_prime_nogil(q_prime_view, X, dim, n, warmup, i, &added_this_iter, &removed_this_iter, &internal_candidates)
+
+            current_tree += 1
+    
+    free(tree_roots)
+    free(tree_hyperplanes)
+
+    no_returns = min(n, internal_candidates.size())
+    result = np.empty(no_returns, dtype=np.int32)
+
+    i = 0
+    for candidate in internal_candidates:
+        if i >= no_returns:
+            break
+        result[i] = candidate.second
+        i += 1
+
+    return result
+
 cdef void _get_candidates_at_tree_i_nogil(double[::1] q_prime,
                                 double[::1] original_query,
                                 double[:, ::1] X,
@@ -276,17 +355,6 @@ cdef void sort_candidates_mtq(
 
 
 
-
-
-
-
-
-
-
-
-
-
-
 cpdef query_all_mtq_anticentroids(double[::1] x, double[:, ::1] X, list trees, unsigned int n, unsigned int warmup):
     """
     Return approximate nearest neighbours to point x from the model.
@@ -347,6 +415,11 @@ cpdef query_all_mtq_anticentroids(double[::1] x, double[:, ::1] X, list trees, u
         i += 1
 
     return result
+
+
+
+
+
     
 ### End Ben zone
 

@@ -99,6 +99,9 @@ def do_static_query(structure, query, k):
 def do_dynamic_query(structure, query, k):
     return structure.query_mtq(query, k)
 
+def do_ouroboros_query(structure, query, k):
+    return structure.query_mtq_ouroboros(query, k, patience=16)
+
 def measure_recall_static_vs_moving(num_trees, data, queries, true_nns, inertia, k=K):
     """
     Measures the difference in recall between moving the query vs not.
@@ -109,9 +112,11 @@ def measure_recall_static_vs_moving(num_trees, data, queries, true_nns, inertia,
     
     static_recalls = []
     dynamic_recalls = []
+    ouroboros_recalls = []
     
     static_ids = []
     dynamic_ids = []
+    ouroboros_ids = []
 
     ## For static RP forest
     start_time = time.time()
@@ -131,13 +136,24 @@ def measure_recall_static_vs_moving(num_trees, data, queries, true_nns, inertia,
     for i in range(len(queries)):
         dynamic_ids.append(do_dynamic_query(x, queries[i, :], k))
     
+    ## For ouroboros RP forest
+    start_time = time.time()
+    for i in range(len(queries)):
+        do_ouroboros_query(x, queries[i, :], k)
+    ouroboros_time = time.time() - start_time
+    
+    for i in range(len(queries)):
+        ouroboros_ids.append(do_ouroboros_query(x, queries[i, :], k))
+    
     
     for i in range(len(queries)):
         static_recalls.append( len (np.intersect1d(true_nns[i], static_ids[i])) )
         dynamic_recalls.append( len (np.intersect1d(true_nns[i], dynamic_ids[i])) )
+        ouroboros_recalls.append( len (np.intersect1d(true_nns[i], ouroboros_ids[i])) )
 
     # Return mean recall and qps
-    return np.mean(static_recalls) / k, np.mean(dynamic_recalls) / k, len(queries) / static_time, len(queries) / dynamic_time
+    return (np.mean(static_recalls) / k, np.mean(dynamic_recalls) / k, np.mean(ouroboros_recalls) / k,
+            len(queries) / static_time, len(queries) / dynamic_time, len(queries) / ouroboros_time)
 
 
 def brute_force_knn(q, data, k: int):
@@ -154,25 +170,31 @@ def run_experiments(dataset_name, n_queries, data, blocks_start, blocks_stop, st
 
     static_recalls = []
     dynamic_recalls = []
+    ouroboros_recalls = []
 
     static_times = []
     dynamic_times = []
+    ouroboros_times = []
 
     for num_trees in tqdm(range(blocks_start, blocks_stop, step)):
-        static_recall, dynamic_recall, static_time, dynamic_time = measure_recall_static_vs_moving(num_trees, data, queries, true_nns, inertia)
+        static_recall, dynamic_recall, ouroboros_recall, static_time, dynamic_time, ouroboros_time = measure_recall_static_vs_moving(num_trees, data, queries, true_nns, inertia)
 
         static_recalls.append(static_recall)
         dynamic_recalls.append(dynamic_recall)
+        ouroboros_recalls.append(ouroboros_recall)
 
         static_times.append(static_time)
         dynamic_times.append(dynamic_time)
+        ouroboros_times.append(ouroboros_time)
         
 
         
     static_recalls = np.array(static_recalls)
     dynamic_recalls = np.array(dynamic_recalls)
+    ouroboros_recalls = np.array(ouroboros_recalls)
     static_times = np.array(static_times)
     dynamic_times = np.array(dynamic_times)
+    ouroboros_times = np.array(ouroboros_times)
     
     
     
@@ -191,18 +213,21 @@ def run_experiments(dataset_name, n_queries, data, blocks_start, blocks_stop, st
     
     results["static_recalls"] = static_recalls.tolist()
     results["dynamic_recalls"] = dynamic_recalls.tolist()
+    results["ouroboros_recalls"] = ouroboros_recalls.tolist()
     results["static_qps"] = static_times.tolist()
     results["dynamic_qps"] = dynamic_times.tolist()
+    results["ouroboros_qps"] = ouroboros_times.tolist()
 
     ## TODO Plot and save comps vs recalls...
-    save_graph(json_path, static_recalls, dynamic_recalls, static_times, dynamic_times)
+    save_graph(json_path, static_recalls, dynamic_recalls, ouroboros_recalls, static_times, dynamic_times, ouroboros_times)
     
     with open(f"{json_path}/output.json", "w") as f:
         json.dump(results, f, indent=2)
 
-def save_graph(out_path, static_recalls, dynamic_recalls, static_times, dynamic_times):
+def save_graph(out_path, static_recalls, dynamic_recalls, ouroboros_recalls, static_times, dynamic_times, ouroboros_times):
     plt.plot(static_recalls, static_times, label="RP-Forest")
     plt.plot(dynamic_recalls, dynamic_times, label="MQ-Forest")
+    plt.plot(ouroboros_recalls, ouroboros_times, label="Ouroboros")
     
     plt.yscale('log')
     plt.ylim(bottom=10)

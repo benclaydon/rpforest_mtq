@@ -2,9 +2,12 @@ import argparse
 import json
 import numpy as np
 from matplotlib import pyplot as plt
-
+from aquarel import load_theme
 
 def save_graph(out_path, static_recalls, dynamic_recalls, static_times, dynamic_times):
+    theme = load_theme("scientific")
+    theme.apply()
+    
     plt.plot(static_recalls, static_times, label="RP-Forest")
     plt.plot(dynamic_recalls, dynamic_times, label="MQ-Forest")
     
@@ -13,16 +16,22 @@ def save_graph(out_path, static_recalls, dynamic_recalls, static_times, dynamic_
     plt.grid(True, alpha=0.3, which='both')
     plt.minorticks_on()
     
-    # plt.ylim(bottom=10**1.3, top=10**3)
+    min_time = min(np.min(static_times), np.min(dynamic_times))
+    plt.ylim(bottom=10 ** np.floor(np.log10(min_time)))
+    
     plt.xlim(left=0, right=1)
 
     
     plt.xlabel("Recall")
     plt.ylabel("Queries per Second")
     
+    theme.apply_transforms()
+
+    
     plt.legend()
     plt.savefig(out_path)
     plt.close()
+    
 
 
 def main():

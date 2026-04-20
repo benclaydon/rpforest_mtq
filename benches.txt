@@ -1,0 +1,7 @@
+Base:
+
+Loaded data
+Made tree
+RPForest time: 0.098597s
+MQ-Forest time: 0.112925s
+

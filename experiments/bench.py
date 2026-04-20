@@ -30,22 +30,23 @@ print(f"Loaded data")
 model = RPForest(leaf_size=500, no_trees=6)
 model.fit(data)
 
+
 print(f"Made tree")
 
-num_queries = 250
+num_queries = 10_000
 query_indices = np.random.choice(len(data), num_queries, replace=False)
 
 time.sleep(1)
 
-start = time.time()
+# start = time.time()
 
-for i, query_idx in enumerate(query_indices):
-    query_vector = data[query_idx]    
-    nns = model.query(query_vector, 20)
-rpforest_time = time.time() - start
+# for i, query_idx in enumerate(query_indices):
+#     query_vector = data[query_idx]    
+#     nns = model.query(query_vector, 20)
+# rpforest_time = time.time() - start
     
 
-print(f"RPForest time: {rpforest_time:.6f}s")
+# print(f"RPForest time: {rpforest_time:.6f}s")
 
 start = time.time()
 

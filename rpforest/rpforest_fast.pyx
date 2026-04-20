@@ -38,7 +38,7 @@ cdef unsigned int SERIALIZATION_VERSION = 2
 
 ### The Ben zone
 
-cdef void add_vectors_inplace(double[::1] vec1, double[::1] vec2, unsigned int dim) nogil:
+cdef void add_vectors_inplace(double[::1] vec1, double[::1] vec2, unsigned int dim) noexcept nogil:
     """
     Add vec2 to vec1 in-place.
     """
@@ -59,7 +59,7 @@ cdef inline double l2_norm(double[::1] vec, unsigned int dim) nogil:
     
     return result ** 0.5
 
-cdef inline void normalize_vector(double[::1] vec, unsigned int dim) nogil:
+cdef inline void normalize_vector(double[::1] vec, unsigned int dim) noexcept nogil:
     """
     Normalize a vector in-place by its L2 norm.
     """
@@ -70,7 +70,7 @@ cdef inline void normalize_vector(double[::1] vec, unsigned int dim) nogil:
         for i in range(dim):
             vec[i] /= norm
 
-cdef inline void zero_vector(double[::1] vec, unsigned int dim) nogil:
+cdef inline void zero_vector(double[::1] vec, unsigned int dim) noexcept nogil:
     """
     Zero out a vector in-place.
     """
@@ -78,7 +78,7 @@ cdef inline void zero_vector(double[::1] vec, unsigned int dim) nogil:
     for i in range(dim):
         vec[i] = 0.0
 
-cdef inline void subtract_vectors_inplace(double[::1] vec1, double[::1] vec2, unsigned int dim) nogil:
+cdef inline void subtract_vectors_inplace(double[::1] vec1, double[::1] vec2, unsigned int dim) noexcept nogil:
     """
     Subtract vec2 from vec1 in-place.
     """
@@ -94,10 +94,13 @@ cdef void update_query_prime_nogil(double[::1] q_prime,
                                     unsigned int i,
                                     unordered_set[int] *added_this_iter,
                                     unordered_set[int] *removed_this_iter,
-                                    cset[pair[double, int]] *internal_candidates) nogil:
+                                    cset[pair[double, int]] *internal_candidates) noexcept nogil:
     """
     Update q_prime vector efficiently with nogil.
     """
+    global tree_roots, tree_hyperplanes, num_roots
+
+
     cdef int idx
     cdef cset[pair[double, int]].iterator it
     
@@ -118,14 +121,74 @@ cdef void update_query_prime_nogil(double[::1] q_prime,
             for idx in deref(removed_this_iter):
                 subtract_vectors_inplace(q_prime, X[idx, :], dim)
 
+
+
+# Helpers for the mtq tree
+
+cdef Node **tree_roots = <Node**>NULL
+cdef Hyperplanes **tree_hyperplanes = <Hyperplanes**>NULL
+cdef Py_ssize_t num_roots = 0
+
+
+cpdef void build_global_tree_ptrs(list trees):
+    """
+    Builds some list that MTQ needs.
+    Used to be done at the top of MTQ.
+    """
+    global tree_roots, tree_hyperplanes, num_roots
+
+    cdef Py_ssize_t i
+    cdef Tree tree
+
+    # free old
+    if tree_roots != NULL:
+        free(tree_roots)
+        tree_roots = <Node**>NULL
+    if tree_hyperplanes != NULL:
+        free(tree_hyperplanes)
+        tree_hyperplanes = <Hyperplanes**>NULL
+    num_roots = 0
+
+    num_roots = len(trees)
+    if num_roots == 0:
+        return
+
+    tree_roots = <Node**>malloc(num_roots * sizeof(Node*))
+    if tree_roots == NULL:
+        raise MemoryError()
+
+    tree_hyperplanes = <Hyperplanes**>malloc(num_roots * sizeof(Hyperplanes*))
+    if tree_hyperplanes == NULL:
+        free(tree_roots)
+        tree_roots = <Node**>NULL
+        raise MemoryError()
+
+    for i in range(num_roots):
+        tree = trees[i]
+        tree_roots[i] = tree.root
+        tree_hyperplanes[i] = tree.hyperplanes
+
+cpdef void free_global_tree_ptrs():
+    global tree_roots, tree_hyperplanes, num_roots
+
+    if tree_roots != NULL:
+        free(tree_roots)
+        tree_roots = <Node**>NULL
+    if tree_hyperplanes != NULL:
+        free(tree_hyperplanes)
+        tree_hyperplanes = <Hyperplanes**>NULL
+    num_roots = 0
+
+
 cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n, unsigned int warmup):
     """
     Return approximate nearest neighbours to point x from the model.
     Uses the MTQ technique.
     """
+    global tree_roots, tree_hyperplanes, num_roots
+
     cdef unsigned int i
     cdef unsigned int dim, no_returns
-    cdef unsigned int num_roots = len(trees)
 
     cdef cnp.ndarray[int, ndim=1] result
     cdef unordered_set[int] seen_ids
@@ -138,16 +201,6 @@ cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n,
 
     cdef unordered_set[int] removed_this_iter;
     cdef unordered_set[int] added_this_iter;
-    
-    # Store tree pointers for nogil access
-    cdef Node **tree_roots = <Node**>malloc(num_roots * sizeof(Node*))
-    cdef Hyperplanes **tree_hyperplanes = <Hyperplanes**>malloc(num_roots * sizeof(Hyperplanes*))
-    cdef Tree tree
-    
-    for i in range(num_roots):
-        tree = trees[i]
-        tree_roots[i] = tree.root
-        tree_hyperplanes[i] = tree.hyperplanes
  
     dim = X.shape[1]
 
@@ -164,9 +217,6 @@ cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n,
             _get_candidates_at_tree_i_nogil(q_normalized_view, x, X, tree_roots[i], tree_hyperplanes[i], dim, n, &seen_ids, &added_this_iter, &removed_this_iter, &internal_candidates)
             update_query_prime_nogil(q_prime_view, X, dim, n, warmup, i, &added_this_iter, &removed_this_iter, &internal_candidates)
     
-    free(tree_roots)
-    free(tree_hyperplanes)
-
     no_returns = min(n, internal_candidates.size())
     result = np.empty(no_returns, dtype=np.int32)
 
@@ -191,7 +241,7 @@ cdef void _get_candidates_at_tree_i_nogil(double[::1] q_prime,
                                 unordered_set[int] *seen_ids,
                                 unordered_set[int] *added_this_iter,
                                 unordered_set[int] *removed_this_iter,
-                                cset[pair[double, int]] *internal_candidates) nogil:
+                                cset[pair[double, int]] *internal_candidates) noexcept nogil:
     """
     Get all members of x's leaf nodes.
     Accepts raw pointers for nogil compatibility.
@@ -212,7 +262,7 @@ cdef void _get_candidates_at_tree_i(double[::1] q_prime,
                                 unordered_set[int] *seen_ids,
                                 unordered_set[int] *added_this_iter,
                                 unordered_set[int] *removed_this_iter,
-                                cset[pair[double, int]] *internal_candidates) nogil:
+                                cset[pair[double, int]] *internal_candidates) noexcept nogil:
     """
     Get all members of x's leaf nodes.
     Now accepts a Tree object directly and runs with nogil.
@@ -235,7 +285,7 @@ cdef void sort_candidates_mtq(
                                 unordered_set[int] *seen_ids,
                                 unordered_set[int] *added_this_iter,
                                 unordered_set[int] *removed_this_iter,
-                                cset[pair[double, int]] *internal_candidates) nogil:
+                                cset[pair[double, int]] *internal_candidates) noexcept nogil:
     """
     Perform final cosine similarity sorting step on merged candidates.
     """
@@ -313,7 +363,7 @@ cpdef list encode_all(double[::1] x, list trees):
 cdef vector[pair[double, int]] sort_candidates(double[::1] x,
                                                double[:, ::1] X,
                                                unsigned int dim,
-                                               vector[int] candidates) nogil:
+                                               vector[int] candidates) noexcept nogil:
     """
     Perform final cosine similarity sorting step on merged candidates.
     """
@@ -800,7 +850,7 @@ cdef inline Node* new_node(unsigned int depth):
     return node
 
 
-cdef inline void slim_node(Node *node) nogil:
+cdef inline void slim_node(Node *node) noexcept nogil:
     """
     Deallocate the indices vector if the node is internal
     """
@@ -816,14 +866,14 @@ cdef inline void slim_node(Node *node) nogil:
         node.indices.swap(swapped_indices)
 
 
-cdef inline void add_descendants(Node *node, Node *left, Node *right) nogil:
+cdef inline void add_descendants(Node *node, Node *left, Node *right) noexcept nogil:
 
     node.n_descendants = 2
     node.left = left
     node.right = right
 
 
-cdef void del_node(Node *node) nogil:
+cdef void del_node(Node *node) noexcept nogil:
     """
     Free a node.
     """
@@ -837,7 +887,7 @@ cdef void del_node(Node *node) nogil:
     free(node)
 
 
-cdef void clear(Node *node) nogil:
+cdef void clear(Node *node) noexcept nogil:
     """
     Recursively remove all indexed points from node and
     its children.

@@ -1,7 +1,18 @@
-Base:
-
+With O3:
 Loaded data
 Made tree
-RPForest time: 0.098597s
-MQ-Forest time: 0.112925s
+MQ-Forest time: 4.298994s
 
+With OFast:
+Loaded data
+Made tree
+MQ-Forest time: 4.286232s
+
+(Keeping O3, as it is right!)
+
+With -march=native:
+Loaded data
+Made tree
+MQ-Forest time: 4.264693s
+
+With Fat LTO:

@@ -10,3 +10,4 @@ dist/
 .eggs
 test_results/
 .venv/
+*.h5

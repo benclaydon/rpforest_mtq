@@ -41,7 +41,7 @@ def _get_extension(extension, file_ext):
         "name": ".".join(extension),
         "sources": ["%s.%s" % ("/".join(extension), file_ext)],
         "language": "c++",
-        "extra_compile_args": ["-ffast-math"],
+        "extra_compile_args": ["-g"],
     }
     if NUMPY_AVAILABLE:
         # most of the time it's fine if the include_dirs aren't there

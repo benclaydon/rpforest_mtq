@@ -2,6 +2,7 @@ from rpforest import RPForest
 import numpy as np
 import time
 from scipy.io import loadmat
+import time
 
 def get_mf_dino2():
     data = np.zeros((0, 384), dtype=np.float32)
@@ -14,13 +15,28 @@ def get_mf_dino2():
 
     return data.astype(np.double)
 
-data = get_mf_dino2()
+def get_glove():
+    data = np.load("/Volumes/Data/twitter_glove/twitter_glove_100d.npy")
+    data = data.astype(np.float32)
+    data /= np.linalg.norm(data, axis=1, keepdims=True)
+    
+    data = np.ascontiguousarray(data, dtype=np.double)
+    return data
 
-model = RPForest(leaf_size=250, no_trees=16)
+
+data = get_glove()
+print(f"Loaded data")
+
+model = RPForest(leaf_size=500, no_trees=6)
 model.fit(data)
+
+print(f"Made tree")
 
 num_queries = 50
 query_indices = np.random.choice(len(data), num_queries, replace=False)
+
+time.sleep(10)
+
 
 for i, query_idx in enumerate(query_indices):
     query_vector = data[query_idx]

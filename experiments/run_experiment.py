@@ -16,7 +16,8 @@ GLOVE = "glove"
 GOOAQ = "gooaq"
 UNIFORM = "uniform"
 LAION = "laion"
-AVAILABLE_DATASETS = [MF_DINO2, GLOVE, GOOAQ, UNIFORM, LAION]
+UNIFORM_20D = "uniform_20d"
+AVAILABLE_DATASETS = [MF_DINO2, GLOVE, GOOAQ, UNIFORM, LAION, UNIFORM_20D]
 
 K = 20
 
@@ -34,6 +35,13 @@ def get_mf_dino2():
 
 def get_uniform():
     data = np.random.normal(0, 1, size=(1_000_000, 200)).astype(np.float32)
+    data /= np.linalg.norm(data, axis=1, keepdims=True)
+    data = np.ascontiguousarray(data, dtype=np.double)
+
+    return data
+
+def get_uniform_20d():
+    data = np.random.normal(0, 1, size=(1_000_000, 20)).astype(np.float32)
     data /= np.linalg.norm(data, axis=1, keepdims=True)
     data = np.ascontiguousarray(data, dtype=np.double)
 
@@ -85,7 +93,7 @@ def do_static_query(structure, query, k):
     return structure.query(query, k)
 
 def do_dynamic_query(structure, query, k):
-    return structure.query_mtq(query, k)
+    return structure.query_mtq(query, k, warmup=32) # Added 
 
 def measure_recall_static_vs_moving(num_trees, data, queries, true_nns, inertia, k=K):
     """
@@ -245,5 +253,8 @@ if __name__ == "__main__":
         run_experiments(dataset, n_queries, get_laion(), start_blocks, end_blocks, step, inertia, partial_polys, out_path)
     elif dataset == UNIFORM:
         run_experiments(dataset, n_queries, get_uniform(), start_blocks, end_blocks, step, inertia, partial_polys, out_path)
+    elif dataset == UNIFORM_20D:
+        run_experiments(dataset, n_queries, get_uniform_20d(), start_blocks, end_blocks, step, inertia, partial_polys, out_path)
+
     else:
         raise RuntimeError(f"Unknown dataset. Datasets are: {AVAILABLE_DATASETS}")

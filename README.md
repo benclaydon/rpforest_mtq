@@ -1,5 +1,12 @@
 # rpforest
 
+## Introduction
+
+This is a modified version of RP-Forest, modified from the original which can be found at https://raw.githubusercontent.com/lyst/rpforest/master.
+It uses query modification techniques, which can be read about at [LINK UPCOMING]
+
+## RP-Forest
+
 ![rpforest](https://raw.githubusercontent.com/lyst/rpforest/master/rpforest.jpg)
 
 [![CircleCI](https://circleci.com/gh/lyst/rpforest/tree/master.svg?style=svg&circle-token=6ab982f5b17307152e1f3b42b00b8ecc074a764d)](https://circleci.com/gh/lyst/rpforest/tree/master)

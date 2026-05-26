@@ -3,7 +3,7 @@
 ## Introduction
 
 This is a modified version of RP-Forest, modified from the original which can be found at https://raw.githubusercontent.com/lyst/rpforest/master.
-It uses query modification techniques, which can be read about ![here](https://arxiv.org/abs/2605.23807)
+It uses query modification techniques, which can be read about [here](https://arxiv.org/abs/2605.23807)
 
 ## RP-Forest
 

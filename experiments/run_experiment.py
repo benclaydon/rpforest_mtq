@@ -19,7 +19,7 @@ LAION = "laion"
 UNIFORM_20D = "uniform_20d"
 AVAILABLE_DATASETS = [MF_DINO2, GLOVE, GOOAQ, UNIFORM, LAION, UNIFORM_20D]
 
-K = 20
+K = 100
 
 def get_mf_dino2():
     data = np.zeros((0, 384), dtype=np.float32)
@@ -93,7 +93,7 @@ def do_static_query(structure, query, k):
     return structure.query(query, k)
 
 def do_dynamic_query(structure, query, k):
-    return structure.query_mtq(query, k, warmup=32) # Added 
+    return structure.query_mtq(query, k, warmup=1) # Added
 
 def measure_recall_static_vs_moving(num_trees, data, queries, true_nns, inertia, k=K):
     """

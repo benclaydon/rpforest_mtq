@@ -216,6 +216,45 @@ def test_sample_training():
         assert precision >= expected_precision
 
 
+def test_random_leaf_subset_indices():
+
+    X_train, X_test = _get_mnist_data(seed=42)
+
+    tree = RPForest(leaf_size=10, no_trees=5)
+
+    subset_0 = tree.random_leaf_subset_indices(
+        X_train, subset_leaf_size=25, random_state=123
+    )
+    subset_1 = tree.random_leaf_subset_indices(
+        X_train, subset_leaf_size=25, random_state=123
+    )
+
+    assert subset_0.shape[0] > 0
+    assert subset_0.shape[0] <= 25
+    assert (subset_0 == subset_1).all()
+    assert (subset_0 >= 0).all()
+    assert (subset_0 < X_train.shape[0]).all()
+
+
+def test_fit_random_leaf_subset():
+
+    X_train, X_test = _get_mnist_data(seed=42)
+
+    tree = RPForest(leaf_size=10, no_trees=10)
+    tree.fit_random_leaf_subset(X_train, subset_leaf_size=100, random_state=123)
+
+    assert tree._X.shape == X_train.shape
+
+    nodes = {k: set(v) for k, v in tree.get_leaf_nodes()}
+    for i, x_train in enumerate(X_train[:100]):
+        nns = tree.query(x_train, 10)[:10]
+        assert nns[0] == i
+
+        point_codes = tree.encode(x_train)
+        for code in point_codes:
+            assert i in nodes[code]
+
+
 def test_multiple_fit_calls():
 
     X_train, X_test = _get_mnist_data()

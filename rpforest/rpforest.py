@@ -8,6 +8,16 @@ from rpforest.rpforest_fast import Tree, query_all, query_all_mtq, encode_all, g
 SERIALIZATION_VERSION = 2
 
 
+def _check_random_state(seed):
+    if seed is None or seed is np.random:
+        return np.random.mtrand._rand
+    if isinstance(seed, (int, np.integer)):
+        return np.random.RandomState(seed)
+    if isinstance(seed, np.random.RandomState):
+        return seed
+    raise ValueError("random_state must be None, an integer, or a RandomState instance.")
+
+
 class RPForest(object):
     """
     Constructs approximate nearest neighbour lookup structures
@@ -84,6 +94,89 @@ class RPForest(object):
 
         # Lists the trees as required by mtq
         build_global_tree_ptrs(self.trees)
+
+        return self
+
+    def random_leaf_subset_indices(
+        self, X, subset_leaf_size=None, normalise=True, random_state=None
+    ):
+        """
+        Return point indices from a random leaf of a temporary RP tree fit on X.
+
+        This is an RP-Forest-native analogue of selecting a random hash bin:
+        a single random projection tree partitions the data, then one occupied
+        leaf is selected uniformly at random.
+        """
+
+        if X.shape[0] < 1 or X.shape[1] < 1:
+            raise Exception("You must supply a valid 2D array.")
+
+        if subset_leaf_size is None:
+            subset_leaf_size = self.leaf_size
+
+        if subset_leaf_size < 1:
+            raise ValueError("subset_leaf_size must be at least 1.")
+
+        if normalise:
+            X_tree = X / np.linalg.norm(X, axis=1)[:, np.newaxis]
+        else:
+            X_tree = X
+
+        X_tree = np.ascontiguousarray(X_tree, dtype=np.float64)
+
+        rnd = _check_random_state(random_state)
+        selector_tree = Tree(subset_leaf_size, X_tree.shape[1])
+
+        if random_state is None or random_state is np.random:
+            selector_tree.make_tree(X_tree)
+        else:
+            state = np.random.get_state()
+            np.random.set_state(rnd.get_state())
+            try:
+                selector_tree.make_tree(X_tree)
+                rnd.set_state(np.random.get_state())
+            finally:
+                np.random.set_state(state)
+
+        leaves = [np.asarray(indices, dtype=np.int32) for _, indices in selector_tree.get_leaf_nodes()]
+        leaves = [indices for indices in leaves if indices.shape[0] > 0]
+
+        if not leaves:
+            raise Exception("Could not generate a non-empty RP-Forest subset.")
+
+        return leaves[rnd.randint(len(leaves))]
+
+    def fit_random_leaf_subset(
+        self, X, subset_leaf_size=None, normalise=True, random_state=None
+    ):
+        """
+        Fit tree structure on a random RP-Forest leaf subset, then index all X.
+
+        This automates the existing large-dataset workflow of fitting on a
+        representative subset, clearing, and indexing the complete dataset.
+        """
+
+        subset_indices = self.random_leaf_subset_indices(
+            X,
+            subset_leaf_size=subset_leaf_size,
+            normalise=normalise,
+            random_state=random_state,
+        )
+
+        if normalise:
+            X_index = X / np.linalg.norm(X, axis=1)[:, np.newaxis]
+        else:
+            X_index = X
+
+        X_index = np.ascontiguousarray(X_index, dtype=np.float64)
+
+        self.fit(X_index[subset_indices], normalise=False)
+        self.clear()
+
+        for i, x in enumerate(X_index):
+            self.index(i, x, normalise=False)
+
+        self._X = X_index
 
         return self
 

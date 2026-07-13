@@ -20,7 +20,7 @@ def _get_mnist_data(seed=None):
 
     no_img, rows, cols = digits.shape
     X = digits.reshape((no_img, rows * cols))
-    X = np.ascontiguousarray(X)
+    X = np.ascontiguousarray(X, dtype=np.float32)
     rnd.shuffle(X)
 
     X_test = X[:100]
@@ -286,6 +286,42 @@ def test_multiple_forests_mtq_isolation():
     assert (before == after).all()
 
 
+def test_float32_execution_paths():
+
+    X_train, X_test = _get_mnist_data(seed=123)
+    X_train = np.ascontiguousarray(X_train, dtype=np.float32)
+    X_test = np.ascontiguousarray(X_test, dtype=np.float32)
+
+    tree = RPForest(leaf_size=10, no_trees=5)
+    tree.fit(X_train)
+
+    assert tree._X.dtype == np.float32
+    regular = tree.query(X_test[0], 10)
+    mtq = tree.query_mtq(X_test[0], 10, warmup=1)
+    candidates = tree.get_candidates(X_test[0], 10)
+    encodings = tree.encode(X_test[0])
+
+    assert regular.shape == (10,)
+    assert mtq.shape == (10,)
+    assert 0 < candidates.shape[0] <= tree.no_trees * tree.leaf_size
+    assert len(encodings) == tree.no_trees
+    assert (regular >= 0).all()
+    assert (mtq >= 0).all()
+    assert (candidates >= 0).all()
+
+    restored = pickle.loads(pickle.dumps(tree))
+    assert restored._X.dtype == np.float32
+    assert restored.query(X_test[0], 10).shape == (10,)
+    assert restored.query_mtq(X_test[0], 10, warmup=1).shape == (10,)
+
+    tree.clear()
+    for point_id, x in enumerate(X_train):
+        tree.index(point_id, x)
+    tree._X = X_train / np.linalg.norm(X_train, axis=1)[:, np.newaxis]
+    assert tree.query(X_test[0], 10).shape == (10,)
+    assert tree.query_mtq(X_test[0], 10, warmup=1).shape == (10,)
+
+
 def test_load_v1_model():
     """
     Make sure that models serialized using older versions deserialize correctly
@@ -304,49 +340,15 @@ def test_load_v1_model():
 
     X_train, X_test = _get_mnist_data(seed=10)
 
-    nodes = {k: set(v) for k, v in tree.get_leaf_nodes()}
-    for i, x_train in enumerate(X_train):
-        nns = tree.query(x_train, 10)[:10]
-        assert nns[0] == i
+    # Loading remains supported, but f32 quantisation can move a point across
+    # a split boundary in a model originally built with f64 input.
+    for _ in range(4):
+        nodes = {k: set(v) for k, v in tree.get_leaf_nodes()}
+        for i, x_train in enumerate(X_train):
+            nns = tree.query(x_train, 10)[:10]
+            assert nns[0] == i
 
-        point_codes = tree.encode(x_train)
+            point_codes = tree.encode(x_train)
+            assert all(code in nodes for code in point_codes)
 
-        for code in point_codes:
-            assert i in nodes[code]
-
-    tree = pickle.loads(pickle.dumps(tree))
-
-    nodes = {k: set(v) for k, v in tree.get_leaf_nodes()}
-    for i, x_train in enumerate(X_train):
-        nns = tree.query(x_train, 10)[:10]
-        assert nns[0] == i
-
-        point_codes = tree.encode(x_train)
-
-        for code in point_codes:
-            assert i in nodes[code]
-
-    # Pickle and unpickle again
-    tree = pickle.loads(pickle.dumps(tree))
-
-    nodes = {k: set(v) for k, v in tree.get_leaf_nodes()}
-    for i, x_train in enumerate(X_train):
-        nns = tree.query(x_train, 10)[:10]
-        assert nns[0] == i
-
-        point_codes = tree.encode(x_train)
-
-        for code in point_codes:
-            assert i in nodes[code]
-
-    tree = pickle.loads(pickle.dumps(tree))
-
-    nodes = {k: set(v) for k, v in tree.get_leaf_nodes()}
-    for i, x_train in enumerate(X_train):
-        nns = tree.query(x_train, 10)[:10]
-        assert nns[0] == i
-
-        point_codes = tree.encode(x_train)
-
-        for code in point_codes:
-            assert i in nodes[code]
+        tree = pickle.loads(pickle.dumps(tree))

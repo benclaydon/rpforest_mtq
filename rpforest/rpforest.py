@@ -46,7 +46,6 @@ class RPForest(object):
         self.trees = []
         self.dim = None
         self._X = None
-
         self.serialization_version = SERIALIZATION_VERSION
         
         
@@ -65,7 +64,7 @@ class RPForest(object):
         Construct the random projection forest for points in X.
 
         Arguments:
-        - np.float64 array X [n_points, dim]
+        - float32 array X [n_points, dim]
         - optional boolean normalise: whether to normalise X. If True,
                                       a copy of X will be made and
                                       normalised.
@@ -80,9 +79,11 @@ class RPForest(object):
         self.dim = X.shape[1]
 
         if normalise:
-            self._X = X / np.linalg.norm(X, axis=1)[:, np.newaxis]
+            X_index = X / np.linalg.norm(X, axis=1)[:, np.newaxis]
         else:
-            self._X = X
+            X_index = X
+
+        self._X = np.ascontiguousarray(X_index, dtype=np.float32)
 
         # Reset the trees list in case of repeated calls to fit
         self.trees = []
@@ -119,7 +120,7 @@ class RPForest(object):
         else:
             X_tree = X
 
-        X_tree = np.ascontiguousarray(X_tree, dtype=np.float64)
+        X_tree = np.ascontiguousarray(X_tree, dtype=np.float32)
 
         rnd = _check_random_state(random_state)
         selector_tree = Tree(subset_leaf_size, X_tree.shape[1])
@@ -165,7 +166,7 @@ class RPForest(object):
         else:
             X_index = X
 
-        X_index = np.ascontiguousarray(X_index, dtype=np.float64)
+        X_index = np.ascontiguousarray(X_index, dtype=np.float32)
 
         self.fit(X_index[subset_indices], normalise=False)
         self.clear()
@@ -198,7 +199,7 @@ class RPForest(object):
 
         Arguments:
         - int point_id
-        - np.float64 vector x [dim]
+        - float32 vector x [dim]
         """
 
         if not self._is_constructed():
@@ -209,11 +210,23 @@ class RPForest(object):
 
         assert len(x) == self.dim
 
+        x = np.asarray(x, dtype=np.float32)
         if normalise:
             x = x / np.linalg.norm(x)
 
+        x = np.ascontiguousarray(x, dtype=np.float32)
+
         for tree in self.trees:
             tree.index(point_id, x)
+
+    def _prepare_query(self, x, normalise):
+        """Convert a query to the model's vector dtype and contiguous layout."""
+
+        x = np.asarray(x, dtype=np.float32)
+        if normalise:
+            x = x / np.linalg.norm(x)
+
+        return np.ascontiguousarray(x, dtype=np.float32)
 
     def query(self, x, number=10, normalise=True):
         """
@@ -226,7 +239,7 @@ class RPForest(object):
         At most no_trees * leaf_size NNs will can be returned.
 
         Arguments:
-        - np.float64 vector x [dim]
+        - float32 vector x [dim]
         - optional int number: number of candidates to return.
         """
 
@@ -239,8 +252,7 @@ class RPForest(object):
         assert self._X.shape[1] == self.dim
         assert len(x) == self.dim
 
-        if normalise:
-            x = x / np.linalg.norm(x)
+        x = self._prepare_query(x, normalise)
 
         return query_all(x, self._X, self.trees, number)
     
@@ -255,7 +267,7 @@ class RPForest(object):
         At most no_trees * leaf_size NNs will can be returned.
 
         Arguments:
-        - np.float64 vector x [dim]
+        - float32 vector x [dim]
         - optional int number: number of candidates to return.
         """
 
@@ -268,8 +280,7 @@ class RPForest(object):
         assert self._X.shape[1] == self.dim
         assert len(x) == self.dim
 
-        if normalise:
-            x = x / np.linalg.norm(x)
+        x = self._prepare_query(x, normalise)
 
         return query_all_mtq(x, self._X, self.trees, number, warmup)
 
@@ -289,8 +300,7 @@ class RPForest(object):
 
         assert len(x) == self.dim
 
-        if normalise:
-            x = x / np.linalg.norm(x)
+        x = self._prepare_query(x, normalise)
 
         return get_candidates_all(x, self.trees, self.dim, number)
 
@@ -304,8 +314,7 @@ class RPForest(object):
 
         assert len(x) == self.dim
 
-        if normalise:
-            x = x / np.linalg.norm(x)
+        x = self._prepare_query(x, normalise)
 
         return encode_all(x, self.trees)
 
@@ -335,7 +344,8 @@ class RPForest(object):
             "leaf_size": self.leaf_size,
             "no_trees": self.no_trees,
             "serialization_version": self.serialization_version,
-            "X": self._X,
+            "X": (np.ascontiguousarray(self._X, dtype=np.float32)
+                  if self._X is not None else None),
         }
 
         tree_states = []
@@ -352,7 +362,8 @@ class RPForest(object):
         self.dim = state["dim"]
         self.leaf_size = state["leaf_size"]
         self.no_trees = state["no_trees"]
-        self._X = state["X"]
+        self._X = (np.ascontiguousarray(state["X"], dtype=np.float32)
+                   if state["X"] is not None else None)
 
         self.trees = []
 

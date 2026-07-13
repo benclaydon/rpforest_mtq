@@ -30,20 +30,20 @@ def get_mf_dino2():
         fp /= np.linalg.norm(fp, axis=1, keepdims=True)
         data = np.vstack((data, fp))
         
-    data = np.ascontiguousarray(data, dtype=np.double)
+    data = np.ascontiguousarray(data, dtype=np.float32)
     return data
 
 def get_uniform():
     data = np.random.normal(0, 1, size=(1_000_000, 200)).astype(np.float32)
     data /= np.linalg.norm(data, axis=1, keepdims=True)
-    data = np.ascontiguousarray(data, dtype=np.double)
+    data = np.ascontiguousarray(data, dtype=np.float32)
 
     return data
 
 def get_uniform_20d():
     data = np.random.normal(0, 1, size=(1_000_000, 20)).astype(np.float32)
     data /= np.linalg.norm(data, axis=1, keepdims=True)
-    data = np.ascontiguousarray(data, dtype=np.double)
+    data = np.ascontiguousarray(data, dtype=np.float32)
 
     return data
 
@@ -52,7 +52,7 @@ def get_glove():
     data = data.astype(np.float32)
     data /= np.linalg.norm(data, axis=1, keepdims=True)
     
-    data = np.ascontiguousarray(data, dtype=np.double)
+    data = np.ascontiguousarray(data, dtype=np.float32)
     return data
 
 def get_gooaq():
@@ -61,7 +61,7 @@ def get_gooaq():
     data = data.astype(np.float32)
     data /= np.linalg.norm(data, axis=1, keepdims=True)
     
-    data = np.ascontiguousarray(data, dtype=np.double)
+    data = np.ascontiguousarray(data, dtype=np.float32)
     return data
 
 def get_laion():
@@ -77,7 +77,7 @@ def get_laion():
     data = np.unique(data, axis=0)
     print(f"Post uniqued size: {data.shape[0]}")
         
-    data = np.ascontiguousarray(data, dtype=np.double)
+    data = np.ascontiguousarray(data, dtype=np.float32)
 
     return data
 

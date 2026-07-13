@@ -9,6 +9,7 @@ import numpy as np
 cimport numpy as cnp
 
 from libc.stdlib cimport malloc, free
+from libc.math cimport sqrtf
 
 cdef extern from "string.h":
     void memcpy(void* des, void* src, int size)
@@ -37,17 +38,17 @@ cdef unsigned int SERIALIZATION_VERSION = 2
 # evicted when a better result arrives.  The backing vector is also iterable,
 # which is needed when rebuilding q_prime.
 cdef struct CandidateHeap:
-    vector[pair[double, int]] items
+    vector[pair[float, int]] items
 
 
 cdef inline void candidate_heap_push(CandidateHeap *heap,
-                                     pair[double, int] candidate) noexcept nogil:
+                                     pair[float, int] candidate) noexcept nogil:
     deref(heap).items.push_back(candidate)
     push_heap(deref(heap).items.begin(), deref(heap).items.end())
 
 
 cdef inline void candidate_heap_replace_worst(CandidateHeap *heap,
-                                              pair[double, int] candidate) noexcept nogil:
+                                              pair[float, int] candidate) noexcept nogil:
     cdef Py_ssize_t last
 
     # Move the current root to the end, replace it, then restore the heap.
@@ -60,7 +61,7 @@ cdef inline void candidate_heap_replace_worst(CandidateHeap *heap,
 
 ### The Ben zone
 
-cdef inline void add_vectors_inplace(double[::1] vec1, double[::1] vec2, unsigned int dim) noexcept nogil:
+cdef inline void add_vectors_inplace(float[::1] vec1, float[::1] vec2, unsigned int dim) noexcept nogil:
     """
     Add vec2 to vec1 in-place.
     """
@@ -69,30 +70,30 @@ cdef inline void add_vectors_inplace(double[::1] vec1, double[::1] vec2, unsigne
     for i in range(dim):
         vec1[i] += vec2[i]
 
-cdef inline double l2_norm(double[::1] vec, unsigned int dim) nogil:
+cdef inline float l2_norm(float[::1] vec, unsigned int dim) noexcept nogil:
     """
     Compute the L2 (Euclidean) norm of a vector.
     """
     cdef unsigned int i
-    cdef double result = 0.0
+    cdef float result = 0.0
     
     for i in range(dim):
         result += vec[i] * vec[i]
     
-    return result ** 0.5
+    return sqrtf(result)
 
-cdef inline void normalize_vector(double[::1] vec, unsigned int dim) noexcept nogil:
+cdef inline void normalize_vector(float[::1] vec, unsigned int dim) noexcept nogil:
     """
     Normalize a vector in-place by its L2 norm.
     """
     cdef unsigned int i
-    cdef double norm = l2_norm(vec, dim)
+    cdef float norm = l2_norm(vec, dim)
     
     if norm > 0.0:
         for i in range(dim):
             vec[i] /= norm
 
-cdef inline void subtract_vectors_inplace(double[::1] vec1, double[::1] vec2, unsigned int dim) noexcept nogil:
+cdef inline void subtract_vectors_inplace(float[::1] vec1, float[::1] vec2, unsigned int dim) noexcept nogil:
     """
     Subtract vec2 from vec1 in-place.
     """
@@ -100,7 +101,7 @@ cdef inline void subtract_vectors_inplace(double[::1] vec1, double[::1] vec2, un
     for i in range(dim):
         vec1[i] -= vec2[i]
 
-cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n, unsigned int warmup):
+cpdef query_all_mtq(float[::1] x, float[:, ::1] X, list trees, unsigned int n, unsigned int warmup):
     """
     Return approximate nearest neighbours to point x from the model.
     Uses the MTQ technique.
@@ -117,12 +118,12 @@ cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n,
     cdef Tree tree
 
     cdef CandidateHeap internal_candidates
-    cdef cnp.ndarray[double, ndim=1] q_prime = np.copy(x)
-    cdef double[::1] q_prime_view = q_prime
-    cdef cnp.ndarray[double, ndim=1] centroid_sum = np.zeros(x.shape[0], dtype=np.float64)
-    cdef double[::1] centroid_sum_view = centroid_sum
-    cdef cnp.ndarray[double, ndim=1] q_normalized = np.empty(x.shape[0], dtype=np.float64)
-    cdef double[::1] q_normalized_view = q_normalized
+    cdef cnp.ndarray[cnp.float32_t, ndim=1] q_prime = np.copy(x)
+    cdef float[::1] q_prime_view = q_prime
+    cdef cnp.ndarray[cnp.float32_t, ndim=1] centroid_sum = np.zeros_like(q_prime)
+    cdef float[::1] centroid_sum_view = centroid_sum
+    cdef cnp.ndarray[cnp.float32_t, ndim=1] q_normalized = np.empty_like(q_prime)
+    cdef float[::1] q_normalized_view = q_normalized
 
     dim = X.shape[1]
     no_trees = len(trees)
@@ -167,15 +168,15 @@ cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n,
 
     
 
-cdef void _get_candidates_at_tree_i_nogil(double[::1] q_prime,
-                                double[::1] original_query,
-                                double[:, ::1] X,
+cdef void _get_candidates_at_tree_i_nogil(float[::1] q_prime,
+                                float[::1] original_query,
+                                float[:, ::1] X,
                                 Node *root,
                                 Hyperplanes *hyperplanes,
                                 int dim,
                                 unsigned int n,
                                 unordered_set[int] *seen_ids,
-                                double[::1] centroid_sum,
+                                float[::1] centroid_sum,
                                 CandidateHeap *internal_candidates) noexcept nogil:
     """
     Get all members of x's leaf nodes.
@@ -188,14 +189,14 @@ cdef void _get_candidates_at_tree_i_nogil(double[::1] q_prime,
 
     sort_candidates_mtq(original_query, X, dim, n, leaf.indices, seen_ids, centroid_sum, internal_candidates)
 
-cdef void _get_candidates_at_tree_i(double[::1] q_prime,
-                                double[::1] original_query,
-                                double[:, ::1] X,
+cdef void _get_candidates_at_tree_i(float[::1] q_prime,
+                                float[::1] original_query,
+                                float[:, ::1] X,
                                 Tree tree,
                                 int dim,
                                 unsigned int n,
                                 unordered_set[int] *seen_ids,
-                                double[::1] centroid_sum,
+                                float[::1] centroid_sum,
                                 CandidateHeap *internal_candidates) noexcept nogil:
     """
     Get all members of x's leaf nodes.
@@ -211,13 +212,13 @@ cdef void _get_candidates_at_tree_i(double[::1] q_prime,
     sort_candidates_mtq(original_query, X, dim, n, leaf.indices, seen_ids, centroid_sum, internal_candidates)
 
 cdef void sort_candidates_mtq(
-                                double[::1] original_query,
-                                double[:, ::1] X,
+                                float[::1] original_query,
+                                float[:, ::1] X,
                                 unsigned int dim,
                                 unsigned int n,
                                 vector[int] *candidates,
                                 unordered_set[int] *seen_ids,
-                                double[::1] centroid_sum,
+                                float[::1] centroid_sum,
                                 CandidateHeap *internal_candidates) noexcept nogil:
     """
     Perform final cosine similarity sorting step on merged candidates.
@@ -225,8 +226,8 @@ cdef void sort_candidates_mtq(
     cdef unsigned int i, j, no_candidates
     cdef int idx
     cdef int removed_idx
-    cdef double dst
-    cdef pair[double, int] candidate
+    cdef float dst
+    cdef pair[float, int] candidate
 
     no_candidates = candidates.size()
 
@@ -240,7 +241,7 @@ cdef void sort_candidates_mtq(
                 dst -= original_query[j] * X[idx, j]
 
             # If this is smaller than our frutherst thing or we don't have enough points
-            candidate = pair[double, int](dst, idx)
+            candidate = pair[float, int](dst, idx)
 
             if deref(internal_candidates).items.size() < n:
                 candidate_heap_push(internal_candidates, candidate)
@@ -257,10 +258,10 @@ cdef void sort_candidates_mtq(
 
 
 
-cdef inline double dot(hyp *x, double[::1] y, unsigned int n) nogil:
+cdef inline float dot(hyp *x, float[::1] y, unsigned int n) noexcept nogil:
 
     cdef unsigned int i
-    cdef double result = 0.0
+    cdef float result = 0.0
 
     for i in range(n):
         result += x[i] * y[i]
@@ -268,7 +269,7 @@ cdef inline double dot(hyp *x, double[::1] y, unsigned int n) nogil:
     return result
 
 
-cpdef list encode_all(double[::1] x, list trees):
+cpdef list encode_all(float[::1] x, list trees):
     """
     Return leaf codes for point x for all trees.
     """
@@ -290,18 +291,18 @@ cpdef list encode_all(double[::1] x, list trees):
     return codes
 
 
-cdef vector[pair[double, int]] sort_candidates(double[::1] x,
-                                               double[:, ::1] X,
+cdef vector[pair[float, int]] sort_candidates(float[::1] x,
+                                               float[:, ::1] X,
                                                unsigned int dim,
                                                vector[int] candidates) noexcept nogil:
     """
     Perform final cosine similarity sorting step on merged candidates.
     """
 
-    cdef vector[pair[double, int]] scores
+    cdef vector[pair[float, int]] scores
     cdef unsigned int i, j, no_candidates
     cdef int idx, prev_idx
-    cdef double dst
+    cdef float dst
 
     no_candidates = candidates.size()
     scores.reserve(no_candidates)
@@ -316,7 +317,7 @@ cdef vector[pair[double, int]] sort_candidates(double[::1] x,
             dst = 0.0
             for j in range(dim):
                 dst -= x[j] * X[idx, j]
-            scores.push_back(pair[double, int](dst, idx))
+            scores.push_back(pair[float, int](dst, idx))
 
         prev_idx = idx
 
@@ -325,7 +326,7 @@ cdef vector[pair[double, int]] sort_candidates(double[::1] x,
     return scores
 
 
-cpdef query_all(double[::1] x, double[:, ::1] X, list trees, unsigned int n):
+cpdef query_all(float[::1] x, float[:, ::1] X, list trees, unsigned int n):
     """
     Return approximate nearest neighbours to point x from the model.
     """
@@ -333,7 +334,7 @@ cpdef query_all(double[::1] x, double[:, ::1] X, list trees, unsigned int n):
     cdef unsigned int i
     cdef unsigned int dim, no_returns
 
-    cdef vector[pair[double, int]] scores
+    cdef vector[pair[float, int]] scores
     cdef vector[int] candidates
     cdef cnp.ndarray[int, ndim=1] result
 
@@ -352,7 +353,7 @@ cpdef query_all(double[::1] x, double[:, ::1] X, list trees, unsigned int n):
     return result
 
 
-cpdef get_candidates_all(double[::1] x, list trees, unsigned int dim, int number):
+cpdef get_candidates_all(float[::1] x, list trees, unsigned int dim, int number):
     """
     Return all candidate nearest neighbours to point x without a final brute force
     sorting step. The returned candidates are ordered by how many leaf nodes they
@@ -397,7 +398,7 @@ cpdef get_candidates_all(double[::1] x, list trees, unsigned int dim, int number
     return result_arr
 
 
-cdef vector[int] _get_candidates(double[::1] x, list roots, int dim):
+cdef vector[int] _get_candidates(float[::1] x, list roots, int dim):
     """
     Get all memebers of x's leaf nodes.
     """
@@ -459,7 +460,7 @@ cdef class Tree:
 
         self.root = new_node(0)
 
-    def make_tree(self, double[:, ::1] X):
+    def make_tree(self, float[:, ::1] X):
         """
         Recursively build a random projection tree
         from X, starting at the root.
@@ -472,7 +473,7 @@ cdef class Tree:
 
         make_tree(self.root, self.hyperplanes, X, self.max_size, 0)
 
-    def index(self, idx, double[::1] x):
+    def index(self, idx, float[::1] x):
         """
         Add a point to the tree.
         """
@@ -611,16 +612,16 @@ cdef class Tree:
         free_hyperplanes(self.hyperplanes)
 
 
-cdef void make_tree(Node *node, Hyperplanes* hyper, double[:, ::1] X,
+cdef void make_tree(Node *node, Hyperplanes* hyper, float[:, ::1] X,
                     unsigned int max_size, unsigned int depth):
     """
     Recursively build a random projection tree starting at node.
     """
 
     cdef int i
-    cdef double dst
+    cdef float dst
     cdef hyp* hyperplane
-    cdef vector[double] dist
+    cdef vector[float] dist
 
     cdef Node *left
     cdef Node *right
@@ -854,12 +855,12 @@ cdef long get_size(Node *node) nogil:
     return size
 
 
-cdef Node* query(Node *node, Hyperplanes* hyper, double[::1] x) nogil:
+cdef Node* query(Node *node, Hyperplanes* hyper, float[::1] x) noexcept nogil:
     """
     Recursively query the node and its children.
     """
 
-    cdef double dst
+    cdef float dst
     cdef hyp* hyperplane
 
     if node.n_descendants == 0:
@@ -877,12 +878,12 @@ cdef Node* query(Node *node, Hyperplanes* hyper, double[::1] x) nogil:
         return query(node.right, hyper, x)
 
 
-cdef void encode(Node *node, Hyperplanes* hyper, double[::1] x, list code, unsigned int dim):
+cdef void encode(Node *node, Hyperplanes* hyper, float[::1] x, list code, unsigned int dim):
     """
     Recursively encode x.
     """
 
-    cdef double dst
+    cdef float dst
     cdef hyp* hyperplane
 
     if node.n_descendants == 0:

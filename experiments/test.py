@@ -13,14 +13,14 @@ def get_mf_dino2():
         fp /= np.linalg.norm(fp, axis=1, keepdims=True)
         data = np.vstack((data, fp))
 
-    return data.astype(np.double)
+    return data.astype(np.float32)
 
 def get_glove():
     data = np.load("/Volumes/Data/twitter_glove/twitter_glove_100d.npy")
     data = data.astype(np.float32)
     data /= np.linalg.norm(data, axis=1, keepdims=True)
     
-    data = np.ascontiguousarray(data, dtype=np.double)
+    data = np.ascontiguousarray(data, dtype=np.float32)
     return data
 
 

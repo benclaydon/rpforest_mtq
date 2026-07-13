@@ -13,14 +13,11 @@ from libc.stdlib cimport malloc, free
 cdef extern from "string.h":
     void memcpy(void* des, void* src, int size)
 
-from libcpp.algorithm cimport sort
-from cython.operator cimport dereference as deref, preincrement as inc, predecrement as dec
+from libcpp.algorithm cimport sort, push_heap, pop_heap
+from cython.operator cimport dereference as deref
 from libcpp.pair cimport pair
 from libcpp.vector cimport vector
-from libcpp.set cimport set as cset
 from libcpp.unordered_set cimport unordered_set
-from libcpp.queue cimport priority_queue
-from libcpp.map cimport map as cmap
 
 
 ctypedef float hyp
@@ -33,6 +30,31 @@ cdef unsigned int hyp_size = calcsize(hyp_symbol)
 
 
 cdef unsigned int SERIALIZATION_VERSION = 2
+
+
+# Fixed-size max heap of candidate (distance, id) pairs.  The largest
+# distance is kept at the root, so the root is the candidate that should be
+# evicted when a better result arrives.  The backing vector is also iterable,
+# which is needed when rebuilding q_prime.
+cdef struct CandidateHeap:
+    vector[pair[double, int]] items
+
+
+cdef inline void candidate_heap_push(CandidateHeap *heap,
+                                     pair[double, int] candidate) noexcept nogil:
+    deref(heap).items.push_back(candidate)
+    push_heap(deref(heap).items.begin(), deref(heap).items.end())
+
+
+cdef inline void candidate_heap_replace_worst(CandidateHeap *heap,
+                                              pair[double, int] candidate) noexcept nogil:
+    cdef Py_ssize_t last
+
+    # Move the current root to the end, replace it, then restore the heap.
+    pop_heap(deref(heap).items.begin(), deref(heap).items.end())
+    last = deref(heap).items.size() - 1
+    deref(heap).items[last] = candidate
+    push_heap(deref(heap).items.begin(), deref(heap).items.end())
 
 
 
@@ -94,7 +116,7 @@ cdef void update_query_prime_nogil(double[::1] q_prime,
                                     unsigned int i,
                                     unordered_set[int] *added_this_iter,
                                     unordered_set[int] *removed_this_iter,
-                                    cset[pair[double, int]] *internal_candidates) noexcept nogil:
+                                    CandidateHeap *internal_candidates) noexcept nogil:
     """
     Update q_prime vector efficiently with nogil.
     """
@@ -102,17 +124,15 @@ cdef void update_query_prime_nogil(double[::1] q_prime,
 
 
     cdef int idx
-    cdef cset[pair[double, int]].iterator it
+    cdef pair[double, int] it
     
     if i >= warmup:
         if deref(removed_this_iter).size() > (n / 2) or i == warmup:
             # Do full computation
             zero_vector(q_prime, dim)
             
-            it = deref(internal_candidates).begin()
-            while it != deref(internal_candidates).end():
-                add_vectors_inplace(q_prime, X[deref(it).second, :], dim)
-                inc(it)
+            for it in deref(internal_candidates).items:
+                add_vectors_inplace(q_prime, X[it.second, :], dim)
         else:
             # Incrementally update q_prime
             for idx in deref(added_this_iter):
@@ -193,7 +213,7 @@ cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n,
     cdef cnp.ndarray[int, ndim=1] result
     cdef unordered_set[int] seen_ids
 
-    cdef cset[pair[double, int]] internal_candidates
+    cdef CandidateHeap internal_candidates
     cdef cnp.ndarray[double, ndim=1] q_prime = np.copy(x)
     cdef double[::1] q_prime_view = q_prime
     cdef cnp.ndarray[double, ndim=1] q_normalized = np.empty(x.shape[0], dtype=np.float64)
@@ -201,8 +221,9 @@ cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n,
 
     cdef unordered_set[int] removed_this_iter;
     cdef unordered_set[int] added_this_iter;
- 
+
     dim = X.shape[1]
+    internal_candidates.items.reserve(n)
 
     # Entire loop now runs in nogil context
     with nogil:
@@ -217,11 +238,13 @@ cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n,
             _get_candidates_at_tree_i_nogil(q_normalized_view, x, X, tree_roots[i], tree_hyperplanes[i], dim, n, &seen_ids, &added_this_iter, &removed_this_iter, &internal_candidates)
             update_query_prime_nogil(q_prime_view, X, dim, n, warmup, i, &added_this_iter, &removed_this_iter, &internal_candidates)
     
-    no_returns = min(n, internal_candidates.size())
+    no_returns = min(n, internal_candidates.items.size())
     result = np.empty(no_returns, dtype=np.int32)
 
     i = 0
-    for candidate in internal_candidates:
+    sort(internal_candidates.items.begin(), internal_candidates.items.end())
+
+    for candidate in internal_candidates.items:
         if i >= no_returns:
             break
         result[i] = candidate.second
@@ -241,7 +264,7 @@ cdef void _get_candidates_at_tree_i_nogil(double[::1] q_prime,
                                 unordered_set[int] *seen_ids,
                                 unordered_set[int] *added_this_iter,
                                 unordered_set[int] *removed_this_iter,
-                                cset[pair[double, int]] *internal_candidates) noexcept nogil:
+                                CandidateHeap *internal_candidates) noexcept nogil:
     """
     Get all members of x's leaf nodes.
     Accepts raw pointers for nogil compatibility.
@@ -262,7 +285,7 @@ cdef void _get_candidates_at_tree_i(double[::1] q_prime,
                                 unordered_set[int] *seen_ids,
                                 unordered_set[int] *added_this_iter,
                                 unordered_set[int] *removed_this_iter,
-                                cset[pair[double, int]] *internal_candidates) noexcept nogil:
+                                CandidateHeap *internal_candidates) noexcept nogil:
     """
     Get all members of x's leaf nodes.
     Now accepts a Tree object directly and runs with nogil.
@@ -285,14 +308,15 @@ cdef void sort_candidates_mtq(
                                 unordered_set[int] *seen_ids,
                                 unordered_set[int] *added_this_iter,
                                 unordered_set[int] *removed_this_iter,
-                                cset[pair[double, int]] *internal_candidates) noexcept nogil:
+                                CandidateHeap *internal_candidates) noexcept nogil:
     """
     Perform final cosine similarity sorting step on merged candidates.
     """
     cdef unsigned int i, j, no_candidates
     cdef int idx
     cdef double dst
-    cdef cset[pair[double, int]].iterator last_it
+    cdef int removed_idx
+    cdef pair[double, int] candidate
 
     no_candidates = candidates.size()
 
@@ -306,20 +330,16 @@ cdef void sort_candidates_mtq(
                 dst -= original_query[j] * X[idx, j]
 
             # If this is smaller than our frutherst thing or we don't have enough points
-            if deref(internal_candidates).size() < n or dst < deref(deref(internal_candidates).rbegin()).first:
-                deref(internal_candidates).insert(pair[double, int](dst, idx))
+            candidate = pair[double, int](dst, idx)
+
+            if deref(internal_candidates).items.size() < n:
+                candidate_heap_push(internal_candidates, candidate)
                 deref(added_this_iter).insert(idx)
-
-                if deref(internal_candidates).size() > n:
-                    # Get the last element (largest distance) - sets are ordered, so last element has max key
-                    last_it = deref(internal_candidates).end()
-                    dec(last_it)  # Decrement iterator to get last valid element
-
-                    # Add to popped
-                    deref(removed_this_iter).insert(deref(last_it).second)
-                    
-                    # Remove the last element
-                    deref(internal_candidates).erase(last_it)
+            elif dst < deref(internal_candidates).items[0].first:
+                removed_idx = deref(internal_candidates).items[0].second
+                candidate_heap_replace_worst(internal_candidates, candidate)
+                deref(added_this_iter).insert(idx)
+                deref(removed_this_iter).insert(removed_idx)
 
             deref(seen_ids).insert(idx)
     

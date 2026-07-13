@@ -36,7 +36,7 @@ cdef unsigned int SERIALIZATION_VERSION = 2
 # Fixed-size max heap of candidate (distance, id) pairs.  The largest
 # distance is kept at the root, so the root is the candidate that should be
 # evicted when a better result arrives.  The backing vector is also iterable,
-# which is needed when rebuilding q_prime.
+# which is needed when rebuilding q_prime and emitting final results.
 cdef struct CandidateHeap:
     vector[pair[float, int]] items
 
@@ -124,6 +124,9 @@ cpdef query_all_mtq(float[::1] x, float[:, ::1] X, list trees, unsigned int n, u
     cdef float[::1] centroid_sum_view = centroid_sum
     cdef cnp.ndarray[cnp.float32_t, ndim=1] q_normalized = np.empty_like(q_prime)
     cdef float[::1] q_normalized_view = q_normalized
+
+    if n == 0:
+        return np.empty(0, dtype=np.int32)
 
     dim = X.shape[1]
     no_trees = len(trees)
@@ -291,21 +294,22 @@ cpdef list encode_all(float[::1] x, list trees):
     return codes
 
 
-cdef vector[pair[float, int]] sort_candidates(float[::1] x,
-                                               float[:, ::1] X,
-                                               unsigned int dim,
-                                               vector[int] candidates) noexcept nogil:
+cdef void sort_candidates(float[::1] x,
+                          float[:, ::1] X,
+                          unsigned int dim,
+                          unsigned int n,
+                          vector[int] candidates,
+                          CandidateHeap *scores) noexcept nogil:
     """
     Perform final cosine similarity sorting step on merged candidates.
     """
 
-    cdef vector[pair[float, int]] scores
     cdef unsigned int i, j, no_candidates
     cdef int idx, prev_idx
     cdef float dst
+    cdef pair[float, int] candidate
 
     no_candidates = candidates.size()
-    scores.reserve(no_candidates)
     sort(candidates.begin(), candidates.end())
 
     prev_idx = -1
@@ -317,13 +321,13 @@ cdef vector[pair[float, int]] sort_candidates(float[::1] x,
             dst = 0.0
             for j in range(dim):
                 dst -= x[j] * X[idx, j]
-            scores.push_back(pair[float, int](dst, idx))
+            candidate = pair[float, int](dst, idx)
+            if deref(scores).items.size() < n:
+                candidate_heap_push(scores, candidate)
+            elif dst < deref(scores).items[0].first:
+                candidate_heap_replace_worst(scores, candidate)
 
         prev_idx = idx
-
-    sort(scores.begin(), scores.end())
-
-    return scores
 
 
 cpdef query_all(float[::1] x, float[:, ::1] X, list trees, unsigned int n):
@@ -334,21 +338,26 @@ cpdef query_all(float[::1] x, float[:, ::1] X, list trees, unsigned int n):
     cdef unsigned int i
     cdef unsigned int dim, no_returns
 
-    cdef vector[pair[float, int]] scores
     cdef vector[int] candidates
+    cdef CandidateHeap scores
     cdef cnp.ndarray[int, ndim=1] result
 
     dim = X.shape[1]
 
-    candidates = _get_candidates(x, trees, dim)
-    scores = sort_candidates(x, X, dim, candidates)
+    if n == 0:
+        return np.empty(0, dtype=np.int32)
 
-    no_returns = min(n, scores.size())
+    candidates = _get_candidates(x, trees, dim)
+    scores.items.reserve(n)
+    sort_candidates(x, X, dim, n, candidates, &scores)
+
+    no_returns = min(n, scores.items.size())
 
     result = np.empty(no_returns, dtype=np.int32)
 
+    sort(scores.items.begin(), scores.items.end())
     for i in range(no_returns):
-        result[i] = scores[i].second
+        result[i] = scores.items[i].second
 
     return result
 

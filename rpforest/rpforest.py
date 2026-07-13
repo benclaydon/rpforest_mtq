@@ -2,7 +2,7 @@ from __future__ import absolute_import
 
 import numpy as np
 
-from rpforest.rpforest_fast import Tree, query_all, query_all_mtq, encode_all, get_candidates_all, build_global_tree_ptrs, free_global_tree_ptrs
+from rpforest.rpforest_fast import Tree, query_all, query_all_mtq, encode_all, get_candidates_all
 
 
 SERIALIZATION_VERSION = 2
@@ -91,9 +91,6 @@ class RPForest(object):
             tree = Tree(self.leaf_size, self.dim)
             tree.make_tree(self._X)
             self.trees.append(tree)
-
-        # Lists the trees as required by mtq
-        build_global_tree_ptrs(self.trees)
 
         return self
 
@@ -364,17 +361,5 @@ class RPForest(object):
             tree.deserialize(tree_state, state.get("serialization_version", 1))
             self.trees.append(tree)
             
-        # Rebuild global pointers after deserialization
-        build_global_tree_ptrs(self.trees)
-
-
         # Make sure that when serialized again it gets the right serialization version
         self.serialization_version = SERIALIZATION_VERSION
-        
-    def __del__(self):
-        # Optional: only do this if you're sure you have one forest per process.
-        # Otherwise one instance deleting can break others.
-        try:
-            free_global_tree_ptrs()
-        except Exception:
-            pass

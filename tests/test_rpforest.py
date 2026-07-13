@@ -269,6 +269,23 @@ def test_multiple_fit_calls():
     assert len(tree.trees) == 10
 
 
+def test_multiple_forests_mtq_isolation():
+
+    X_train, X_test = _get_mnist_data(seed=123)
+
+    first = RPForest(leaf_size=10, no_trees=5)
+    first.fit(X_train)
+    before = first.query_mtq(X_test[0], 10)
+
+    second = RPForest(leaf_size=10, no_trees=1)
+    second.fit(X_train[::-1])
+    second.query_mtq(X_test[0], 10)
+
+    after = first.query_mtq(X_test[0], 10)
+
+    assert (before == after).all()
+
+
 def test_load_v1_model():
     """
     Make sure that models serialized using older versions deserialize correctly

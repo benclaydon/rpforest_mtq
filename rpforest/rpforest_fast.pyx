@@ -120,9 +120,6 @@ cdef void update_query_prime_nogil(double[::1] q_prime,
     """
     Update q_prime vector efficiently with nogil.
     """
-    global tree_roots, tree_hyperplanes, num_roots
-
-
     cdef int idx
     cdef pair[double, int] it
     
@@ -141,77 +138,20 @@ cdef void update_query_prime_nogil(double[::1] q_prime,
             for idx in deref(removed_this_iter):
                 subtract_vectors_inplace(q_prime, X[idx, :], dim)
 
-
-
-# Helpers for the mtq tree
-
-cdef Node **tree_roots = <Node**>NULL
-cdef Hyperplanes **tree_hyperplanes = <Hyperplanes**>NULL
-cdef Py_ssize_t num_roots = 0
-
-
-cpdef void build_global_tree_ptrs(list trees):
-    """
-    Builds some list that MTQ needs.
-    Used to be done at the top of MTQ.
-    """
-    global tree_roots, tree_hyperplanes, num_roots
-
-    cdef Py_ssize_t i
-    cdef Tree tree
-
-    # free old
-    if tree_roots != NULL:
-        free(tree_roots)
-        tree_roots = <Node**>NULL
-    if tree_hyperplanes != NULL:
-        free(tree_hyperplanes)
-        tree_hyperplanes = <Hyperplanes**>NULL
-    num_roots = 0
-
-    num_roots = len(trees)
-    if num_roots == 0:
-        return
-
-    tree_roots = <Node**>malloc(num_roots * sizeof(Node*))
-    if tree_roots == NULL:
-        raise MemoryError()
-
-    tree_hyperplanes = <Hyperplanes**>malloc(num_roots * sizeof(Hyperplanes*))
-    if tree_hyperplanes == NULL:
-        free(tree_roots)
-        tree_roots = <Node**>NULL
-        raise MemoryError()
-
-    for i in range(num_roots):
-        tree = trees[i]
-        tree_roots[i] = tree.root
-        tree_hyperplanes[i] = tree.hyperplanes
-
-cpdef void free_global_tree_ptrs():
-    global tree_roots, tree_hyperplanes, num_roots
-
-    if tree_roots != NULL:
-        free(tree_roots)
-        tree_roots = <Node**>NULL
-    if tree_hyperplanes != NULL:
-        free(tree_hyperplanes)
-        tree_hyperplanes = <Hyperplanes**>NULL
-    num_roots = 0
-
-
 cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n, unsigned int warmup):
     """
     Return approximate nearest neighbours to point x from the model.
     Uses the MTQ technique.
     """
-    global tree_roots, tree_hyperplanes, num_roots
-
     cdef unsigned int i
     cdef unsigned int dim, no_returns
+    cdef Py_ssize_t no_trees
 
     cdef cnp.ndarray[int, ndim=1] result
     cdef unordered_set[int] seen_ids
+    cdef vector[Node*] local_tree_roots
+    cdef vector[Hyperplanes*] local_tree_hyperplanes
+    cdef Tree tree
 
     cdef CandidateHeap internal_candidates
     cdef cnp.ndarray[double, ndim=1] q_prime = np.copy(x)
@@ -223,11 +163,19 @@ cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n,
     cdef unordered_set[int] added_this_iter;
 
     dim = X.shape[1]
+    no_trees = len(trees)
+    local_tree_roots.reserve(no_trees)
+    local_tree_hyperplanes.reserve(no_trees)
+    for i in range(no_trees):
+        tree = trees[i]
+        local_tree_roots.push_back(tree.root)
+        local_tree_hyperplanes.push_back(tree.hyperplanes)
+
     internal_candidates.items.reserve(n)
 
     # Entire loop now runs in nogil context
     with nogil:
-        for i in range(num_roots):
+        for i in range(no_trees):
             # Clear the sets
             added_this_iter.clear()
             removed_this_iter.clear()
@@ -235,7 +183,7 @@ cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n,
             # Normalize q_prime for tree query and get candidates
             q_normalized_view[:] = q_prime_view
             normalize_vector(q_normalized_view, dim)
-            _get_candidates_at_tree_i_nogil(q_normalized_view, x, X, tree_roots[i], tree_hyperplanes[i], dim, n, &seen_ids, &added_this_iter, &removed_this_iter, &internal_candidates)
+            _get_candidates_at_tree_i_nogil(q_normalized_view, x, X, local_tree_roots[i], local_tree_hyperplanes[i], dim, n, &seen_ids, &added_this_iter, &removed_this_iter, &internal_candidates)
             update_query_prime_nogil(q_prime_view, X, dim, n, warmup, i, &added_this_iter, &removed_this_iter, &internal_candidates)
     
     no_returns = min(n, internal_candidates.items.size())

@@ -18,7 +18,6 @@ from libcpp.algorithm cimport sort, push_heap, pop_heap
 from cython.operator cimport dereference as deref
 from libcpp.pair cimport pair
 from libcpp.vector cimport vector
-from libcpp.unordered_set cimport unordered_set
 
 
 ctypedef float hyp
@@ -112,7 +111,7 @@ cpdef query_all_mtq(float[::1] x, float[:, ::1] X, list trees, unsigned int n, u
     cdef bint centroid_active = False
 
     cdef cnp.ndarray[int, ndim=1] result
-    cdef unordered_set[int] seen_ids
+    cdef vector[unsigned char] seen_ids
     cdef vector[Node*] local_tree_roots
     cdef vector[Hyperplanes*] local_tree_hyperplanes
     cdef Tree tree
@@ -130,6 +129,7 @@ cpdef query_all_mtq(float[::1] x, float[:, ::1] X, list trees, unsigned int n, u
 
     dim = X.shape[1]
     no_trees = len(trees)
+    seen_ids.resize(X.shape[0], 0)
     local_tree_roots.reserve(no_trees)
     local_tree_hyperplanes.reserve(no_trees)
     for i in range(no_trees):
@@ -178,7 +178,7 @@ cdef void _get_candidates_at_tree_i_nogil(float[::1] q_prime,
                                 Hyperplanes *hyperplanes,
                                 int dim,
                                 unsigned int n,
-                                unordered_set[int] *seen_ids,
+                                vector[unsigned char] *seen_ids,
                                 float[::1] centroid_sum,
                                 CandidateHeap *internal_candidates) noexcept nogil:
     """
@@ -198,7 +198,7 @@ cdef void _get_candidates_at_tree_i(float[::1] q_prime,
                                 Tree tree,
                                 int dim,
                                 unsigned int n,
-                                unordered_set[int] *seen_ids,
+                                vector[unsigned char] *seen_ids,
                                 float[::1] centroid_sum,
                                 CandidateHeap *internal_candidates) noexcept nogil:
     """
@@ -220,7 +220,7 @@ cdef void sort_candidates_mtq(
                                 unsigned int dim,
                                 unsigned int n,
                                 vector[int] *candidates,
-                                unordered_set[int] *seen_ids,
+                                vector[unsigned char] *seen_ids,
                                 float[::1] centroid_sum,
                                 CandidateHeap *internal_candidates) noexcept nogil:
     """
@@ -237,8 +237,9 @@ cdef void sort_candidates_mtq(
     for i in range(no_candidates):
         idx = deref(candidates)[i]
 
-        # If not in seen_ids
-        if deref(seen_ids).find(idx) == deref(seen_ids).end():
+        # Candidate IDs are dense row indices, so a direct-address mark is
+        # cheaper than hashing every candidate.
+        if deref(seen_ids)[idx] == 0:
             dst = 0.0
             for j in range(dim):
                 dst -= original_query[j] * X[idx, j]
@@ -255,7 +256,7 @@ cdef void sort_candidates_mtq(
                 add_vectors_inplace(centroid_sum, X[idx, :], dim)
                 subtract_vectors_inplace(centroid_sum, X[removed_idx, :], dim)
 
-            deref(seen_ids).insert(idx)
+            deref(seen_ids)[idx] = 1
     
 ### End Ben zone
 

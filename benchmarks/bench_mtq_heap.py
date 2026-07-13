@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small, deterministic benchmark for MTQ candidate maintenance.
+"""Small, deterministic benchmark for regular and MTQ query execution.
 
 The forest is built once, then queried repeatedly with the same MTQ
 parameters.  The benchmark intentionally times query calls only; forest
@@ -30,9 +30,9 @@ from rpforest import RPForest  # noqa: E402
 
 
 def normalised_random(rng, points, dim):
-    """Return deterministic, contiguous float64 unit vectors."""
+    """Return deterministic, contiguous float32 unit vectors."""
 
-    vectors = rng.standard_normal((points, dim)).astype(np.float64)
+    vectors = rng.standard_normal((points, dim)).astype(np.float32)
     vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
     return np.ascontiguousarray(vectors)
 
@@ -74,36 +74,7 @@ def main():
     data = normalised_random(np.random.RandomState(12345), args.points, args.dim)
     queries = normalised_random(np.random.RandomState(67890), args.queries, args.dim)
 
-    # Tree construction currently draws hyperplanes from NumPy's global RNG.
-    # Seed it as well so before/after runs use identical forest structures.
-    np.random.seed(24680)
-    build_start = time.perf_counter()
-    forest = RPForest(leaf_size=args.leaf_size, no_trees=args.trees)
-    forest.fit(data, normalise=False)
-    build_seconds = time.perf_counter() - build_start
-
-    timings = []
-    checksum = 0
-    for query in queries:
-        start = time.perf_counter()
-        result = forest.query_mtq(
-            query,
-            number=args.k,
-            warmup=args.warmup,
-            normalise=False,
-        )
-        timings.append(time.perf_counter() - start)
-        # Consume the result so the benchmark also verifies that a query
-        # returned successfully.  This is not part of the timed operation.
-        if len(result):
-            checksum += int(result[0])
-
-    total_seconds = sum(timings)
-    mean_ms = total_seconds * 1000.0 / len(timings)
-    median_ms = float(np.median(timings)) * 1000.0
-    qps = len(timings) / total_seconds if total_seconds else float("inf")
-
-    print("MTQ candidate-maintenance benchmark")
+    print("RP-Forest f32 benchmark")
     print(
         "config: queries={queries} points={points} dim={dim} trees={trees} "
         "leaf_size={leaf} k={k} warmup={warmup}".format(
@@ -116,11 +87,44 @@ def main():
             warmup=args.warmup,
         )
     )
+
+    # Tree construction draws hyperplanes from NumPy's global RNG.
+    np.random.seed(24680)
+    build_start = time.perf_counter()
+    forest = RPForest(leaf_size=args.leaf_size, no_trees=args.trees)
+    forest.fit(data, normalise=False)
+    build_seconds = time.perf_counter() - build_start
+
     print("build: {:.3f} s".format(build_seconds))
-    print("query median: {:.3f} ms".format(median_ms))
-    print("query mean:   {:.3f} ms".format(mean_ms))
-    print("query QPS:    {:.2f}".format(qps))
-    print("result checksum: {}".format(checksum))
+    for mode in ("regular", "mtq"):
+        timings = []
+        checksum = 0
+        for query in queries:
+            start = time.perf_counter()
+            if mode == "regular":
+                result = forest.query(query, number=args.k, normalise=False)
+            else:
+                result = forest.query_mtq(
+                    query,
+                    number=args.k,
+                    warmup=args.warmup,
+                    normalise=False,
+                )
+            timings.append(time.perf_counter() - start)
+            # Consume the result so the benchmark also verifies success.
+            if len(result):
+                checksum += int(result[0])
+
+        total_seconds = sum(timings)
+        mean_ms = total_seconds * 1000.0 / len(timings)
+        median_ms = float(np.median(timings)) * 1000.0
+        qps = len(timings) / total_seconds if total_seconds else float("inf")
+        print(
+            "mode={} median={:.3f} ms mean={:.3f} ms "
+            "QPS={:.2f} checksum={}".format(
+                mode, median_ms, mean_ms, qps, checksum
+            )
+        )
 
 
 if __name__ == "__main__":

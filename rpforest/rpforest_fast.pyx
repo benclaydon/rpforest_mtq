@@ -60,14 +60,41 @@ cdef inline void candidate_heap_replace_worst(CandidateHeap *heap,
 
 ### The Ben zone
 
-cdef inline void add_vectors_inplace(float[::1] vec1, float[::1] vec2, unsigned int dim) noexcept nogil:
-    """
-    Add vec2 to vec1 in-place.
-    """
+cdef inline float negative_dot_row(float *query, float *row, unsigned int dim) noexcept nogil:
+    """Return the negative dot product against one contiguous row."""
     cdef unsigned int i
-    
+    cdef float result = 0.0
+
     for i in range(dim):
-        vec1[i] += vec2[i]
+        result -= query[i] * row[i]
+
+    return result
+
+
+cdef inline float negative_dot_and_add(float *query,
+                                       float *row,
+                                       float *centroid_sum,
+                                       unsigned int dim) noexcept nogil:
+    """Score a row while adding it to the running centroid sum."""
+    cdef unsigned int i
+    cdef float result = 0.0
+
+    for i in range(dim):
+        result -= query[i] * row[i]
+        centroid_sum[i] += row[i]
+
+    return result
+
+
+cdef inline void replace_centroid_row(float *centroid_sum,
+                                      float *added_row,
+                                      float *removed_row,
+                                      unsigned int dim) noexcept nogil:
+    """Replace one row in the running centroid sum in a single pass."""
+    cdef unsigned int i
+
+    for i in range(dim):
+        centroid_sum[i] += added_row[i] - removed_row[i]
 
 cdef inline float l2_norm(float[::1] vec, unsigned int dim) noexcept nogil:
     """
@@ -91,14 +118,6 @@ cdef inline void normalize_vector(float[::1] vec, unsigned int dim) noexcept nog
     if norm > 0.0:
         for i in range(dim):
             vec[i] /= norm
-
-cdef inline void subtract_vectors_inplace(float[::1] vec1, float[::1] vec2, unsigned int dim) noexcept nogil:
-    """
-    Subtract vec2 from vec1 in-place.
-    """
-    cdef unsigned int i
-    for i in range(dim):
-        vec1[i] -= vec2[i]
 
 cpdef query_all_mtq(float[::1] x, float[:, ::1] X, list trees, unsigned int n, unsigned int warmup):
     """
@@ -226,10 +245,12 @@ cdef void sort_candidates_mtq(
     """
     Perform final cosine similarity sorting step on merged candidates.
     """
-    cdef unsigned int i, j, no_candidates
+    cdef unsigned int i, no_candidates
     cdef int idx
     cdef int removed_idx
     cdef float dst
+    cdef float *row
+    cdef float *removed_row
     cdef pair[float, int] candidate
 
     no_candidates = candidates.size()
@@ -240,21 +261,25 @@ cdef void sort_candidates_mtq(
         # Candidate IDs are dense row indices, so a direct-address mark is
         # cheaper than hashing every candidate.
         if deref(seen_ids)[idx] == 0:
-            dst = 0.0
-            for j in range(dim):
-                dst -= original_query[j] * X[idx, j]
+            row = &X[idx, 0]
 
             # If this is smaller than our frutherst thing or we don't have enough points
-            candidate = pair[float, int](dst, idx)
-
             if deref(internal_candidates).items.size() < n:
+                dst = negative_dot_and_add(
+                    &original_query[0], row, &centroid_sum[0], dim
+                )
+                candidate = pair[float, int](dst, idx)
                 candidate_heap_push(internal_candidates, candidate)
-                add_vectors_inplace(centroid_sum, X[idx, :], dim)
-            elif dst < deref(internal_candidates).items[0].first:
-                removed_idx = deref(internal_candidates).items[0].second
-                candidate_heap_replace_worst(internal_candidates, candidate)
-                add_vectors_inplace(centroid_sum, X[idx, :], dim)
-                subtract_vectors_inplace(centroid_sum, X[removed_idx, :], dim)
+            else:
+                dst = negative_dot_row(&original_query[0], row, dim)
+                if dst < deref(internal_candidates).items[0].first:
+                    removed_idx = deref(internal_candidates).items[0].second
+                    removed_row = &X[removed_idx, 0]
+                    candidate = pair[float, int](dst, idx)
+                    candidate_heap_replace_worst(internal_candidates, candidate)
+                    replace_centroid_row(
+                        &centroid_sum[0], row, removed_row, dim
+                    )
 
             deref(seen_ids)[idx] = 1
     

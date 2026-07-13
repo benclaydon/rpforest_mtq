@@ -60,7 +60,7 @@ cdef inline void candidate_heap_replace_worst(CandidateHeap *heap,
 
 ### The Ben zone
 
-cdef void add_vectors_inplace(double[::1] vec1, double[::1] vec2, unsigned int dim) noexcept nogil:
+cdef inline void add_vectors_inplace(double[::1] vec1, double[::1] vec2, unsigned int dim) noexcept nogil:
     """
     Add vec2 to vec1 in-place.
     """
@@ -92,14 +92,6 @@ cdef inline void normalize_vector(double[::1] vec, unsigned int dim) noexcept no
         for i in range(dim):
             vec[i] /= norm
 
-cdef inline void zero_vector(double[::1] vec, unsigned int dim) noexcept nogil:
-    """
-    Zero out a vector in-place.
-    """
-    cdef unsigned int i
-    for i in range(dim):
-        vec[i] = 0.0
-
 cdef inline void subtract_vectors_inplace(double[::1] vec1, double[::1] vec2, unsigned int dim) noexcept nogil:
     """
     Subtract vec2 from vec1 in-place.
@@ -107,36 +99,6 @@ cdef inline void subtract_vectors_inplace(double[::1] vec1, double[::1] vec2, un
     cdef unsigned int i
     for i in range(dim):
         vec1[i] -= vec2[i]
-
-cdef void update_query_prime_nogil(double[::1] q_prime,
-                                    double[:, ::1] X,
-                                    unsigned int dim,
-                                    unsigned int n,
-                                    unsigned int warmup,
-                                    unsigned int i,
-                                    unordered_set[int] *added_this_iter,
-                                    unordered_set[int] *removed_this_iter,
-                                    CandidateHeap *internal_candidates) noexcept nogil:
-    """
-    Update q_prime vector efficiently with nogil.
-    """
-    cdef int idx
-    cdef pair[double, int] it
-    
-    if i >= warmup:
-        if deref(removed_this_iter).size() > (n / 2) or i == warmup:
-            # Do full computation
-            zero_vector(q_prime, dim)
-            
-            for it in deref(internal_candidates).items:
-                add_vectors_inplace(q_prime, X[it.second, :], dim)
-        else:
-            # Incrementally update q_prime
-            for idx in deref(added_this_iter):
-                add_vectors_inplace(q_prime, X[idx, :], dim)
-            
-            for idx in deref(removed_this_iter):
-                subtract_vectors_inplace(q_prime, X[idx, :], dim)
 
 cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n, unsigned int warmup):
     """
@@ -146,6 +108,7 @@ cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n,
     cdef unsigned int i
     cdef unsigned int dim, no_returns
     cdef Py_ssize_t no_trees
+    cdef bint centroid_active = False
 
     cdef cnp.ndarray[int, ndim=1] result
     cdef unordered_set[int] seen_ids
@@ -156,11 +119,10 @@ cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n,
     cdef CandidateHeap internal_candidates
     cdef cnp.ndarray[double, ndim=1] q_prime = np.copy(x)
     cdef double[::1] q_prime_view = q_prime
+    cdef cnp.ndarray[double, ndim=1] centroid_sum = np.zeros(x.shape[0], dtype=np.float64)
+    cdef double[::1] centroid_sum_view = centroid_sum
     cdef cnp.ndarray[double, ndim=1] q_normalized = np.empty(x.shape[0], dtype=np.float64)
     cdef double[::1] q_normalized_view = q_normalized
-
-    cdef unordered_set[int] removed_this_iter;
-    cdef unordered_set[int] added_this_iter;
 
     dim = X.shape[1]
     no_trees = len(trees)
@@ -176,15 +138,18 @@ cpdef query_all_mtq(double[::1] x, double[:, ::1] X, list trees, unsigned int n,
     # Entire loop now runs in nogil context
     with nogil:
         for i in range(no_trees):
-            # Clear the sets
-            added_this_iter.clear()
-            removed_this_iter.clear()
-
             # Normalize q_prime for tree query and get candidates
             q_normalized_view[:] = q_prime_view
             normalize_vector(q_normalized_view, dim)
-            _get_candidates_at_tree_i_nogil(q_normalized_view, x, X, local_tree_roots[i], local_tree_hyperplanes[i], dim, n, &seen_ids, &added_this_iter, &removed_this_iter, &internal_candidates)
-            update_query_prime_nogil(q_prime_view, X, dim, n, warmup, i, &added_this_iter, &removed_this_iter, &internal_candidates)
+
+            if centroid_active:
+                _get_candidates_at_tree_i_nogil(q_normalized_view, x, X, local_tree_roots[i], local_tree_hyperplanes[i], dim, n, &seen_ids, q_prime_view, &internal_candidates)
+            else:
+                _get_candidates_at_tree_i_nogil(q_normalized_view, x, X, local_tree_roots[i], local_tree_hyperplanes[i], dim, n, &seen_ids, centroid_sum_view, &internal_candidates)
+
+            if i >= warmup and not centroid_active:
+                q_prime_view[:] = centroid_sum_view
+                centroid_active = True
     
     no_returns = min(n, internal_candidates.items.size())
     result = np.empty(no_returns, dtype=np.int32)
@@ -210,8 +175,7 @@ cdef void _get_candidates_at_tree_i_nogil(double[::1] q_prime,
                                 int dim,
                                 unsigned int n,
                                 unordered_set[int] *seen_ids,
-                                unordered_set[int] *added_this_iter,
-                                unordered_set[int] *removed_this_iter,
+                                double[::1] centroid_sum,
                                 CandidateHeap *internal_candidates) noexcept nogil:
     """
     Get all members of x's leaf nodes.
@@ -222,7 +186,7 @@ cdef void _get_candidates_at_tree_i_nogil(double[::1] q_prime,
 
     leaf = query(root, hyperplanes, q_prime)
 
-    sort_candidates_mtq(original_query, X, dim, n, leaf.indices, seen_ids, added_this_iter, removed_this_iter, internal_candidates)
+    sort_candidates_mtq(original_query, X, dim, n, leaf.indices, seen_ids, centroid_sum, internal_candidates)
 
 cdef void _get_candidates_at_tree_i(double[::1] q_prime,
                                 double[::1] original_query,
@@ -231,8 +195,7 @@ cdef void _get_candidates_at_tree_i(double[::1] q_prime,
                                 int dim,
                                 unsigned int n,
                                 unordered_set[int] *seen_ids,
-                                unordered_set[int] *added_this_iter,
-                                unordered_set[int] *removed_this_iter,
+                                double[::1] centroid_sum,
                                 CandidateHeap *internal_candidates) noexcept nogil:
     """
     Get all members of x's leaf nodes.
@@ -245,7 +208,7 @@ cdef void _get_candidates_at_tree_i(double[::1] q_prime,
     root = tree.root
     leaf = query(root, tree.hyperplanes, q_prime)
 
-    sort_candidates_mtq(original_query, X, dim, n, leaf.indices, seen_ids, added_this_iter, removed_this_iter, internal_candidates)
+    sort_candidates_mtq(original_query, X, dim, n, leaf.indices, seen_ids, centroid_sum, internal_candidates)
 
 cdef void sort_candidates_mtq(
                                 double[::1] original_query,
@@ -254,16 +217,15 @@ cdef void sort_candidates_mtq(
                                 unsigned int n,
                                 vector[int] *candidates,
                                 unordered_set[int] *seen_ids,
-                                unordered_set[int] *added_this_iter,
-                                unordered_set[int] *removed_this_iter,
+                                double[::1] centroid_sum,
                                 CandidateHeap *internal_candidates) noexcept nogil:
     """
     Perform final cosine similarity sorting step on merged candidates.
     """
     cdef unsigned int i, j, no_candidates
     cdef int idx
-    cdef double dst
     cdef int removed_idx
+    cdef double dst
     cdef pair[double, int] candidate
 
     no_candidates = candidates.size()
@@ -282,12 +244,12 @@ cdef void sort_candidates_mtq(
 
             if deref(internal_candidates).items.size() < n:
                 candidate_heap_push(internal_candidates, candidate)
-                deref(added_this_iter).insert(idx)
+                add_vectors_inplace(centroid_sum, X[idx, :], dim)
             elif dst < deref(internal_candidates).items[0].first:
                 removed_idx = deref(internal_candidates).items[0].second
                 candidate_heap_replace_worst(internal_candidates, candidate)
-                deref(added_this_iter).insert(idx)
-                deref(removed_this_iter).insert(removed_idx)
+                add_vectors_inplace(centroid_sum, X[idx, :], dim)
+                subtract_vectors_inplace(centroid_sum, X[removed_idx, :], dim)
 
             deref(seen_ids).insert(idx)
     

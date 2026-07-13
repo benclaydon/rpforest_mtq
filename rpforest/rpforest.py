@@ -1,8 +1,17 @@
 from __future__ import absolute_import
 
+import threading
+
 import numpy as np
 
-from rpforest.rpforest_fast import Tree, query_all, query_all_mtq, encode_all, get_candidates_all
+from rpforest.rpforest_fast import (
+    MTQWorkspace,
+    Tree,
+    query_all,
+    query_all_mtq,
+    encode_all,
+    get_candidates_all,
+)
 
 
 SERIALIZATION_VERSION = 2
@@ -46,6 +55,7 @@ class RPForest(object):
         self.trees = []
         self.dim = None
         self._X = None
+        self._mtq_workspace_local = threading.local()
         self.serialization_version = SERIALIZATION_VERSION
         
         
@@ -282,7 +292,12 @@ class RPForest(object):
 
         x = self._prepare_query(x, normalise)
 
-        return query_all_mtq(x, self._X, self.trees, number, warmup)
+        workspace = getattr(self._mtq_workspace_local, "workspace", None)
+        if workspace is None:
+            workspace = MTQWorkspace()
+            self._mtq_workspace_local.workspace = workspace
+
+        return query_all_mtq(x, self._X, self.trees, number, warmup, workspace)
 
     def get_candidates(self, x, number=10, normalise=True):
         """
@@ -366,6 +381,7 @@ class RPForest(object):
                    if state["X"] is not None else None)
 
         self.trees = []
+        self._mtq_workspace_local = threading.local()
 
         for tree_state in state["trees"]:
             tree = Tree(self.leaf_size, self.dim)

@@ -57,6 +57,50 @@ cdef inline void candidate_heap_replace_worst(CandidateHeap *heap,
     push_heap(deref(heap).items.begin(), deref(heap).items.end())
 
 
+cdef class MTQWorkspace:
+    """Thread-owned scratch storage for repeated MTQ queries."""
+
+    cdef cnp.ndarray q_prime
+    cdef cnp.ndarray centroid_sum
+    cdef cnp.ndarray q_normalized
+    cdef vector[unsigned int] seen_ids
+    cdef unsigned int seen_generation
+    cdef vector[Node*] local_tree_roots
+    cdef vector[Hyperplanes*] local_tree_hyperplanes
+    cdef CandidateHeap internal_candidates
+
+    def __cinit__(self):
+        self.q_prime = None
+        self.centroid_sum = None
+        self.q_normalized = None
+        self.seen_generation = 0
+
+    cdef void ensure(self, unsigned int dim, Py_ssize_t no_points,
+                     unsigned int n) except *:
+        cdef Py_ssize_t i
+
+        if self.q_prime is None or self.q_prime.shape[0] != dim:
+            self.q_prime = np.empty(dim, dtype=np.float32)
+            self.centroid_sum = np.empty(dim, dtype=np.float32)
+            self.q_normalized = np.empty(dim, dtype=np.float32)
+
+        if self.seen_ids.size() != no_points:
+            self.seen_ids.clear()
+            self.seen_ids.resize(no_points, 0)
+            self.seen_generation = 0
+
+        self.seen_generation += 1
+        if self.seen_generation == 0:
+            for i in range(self.seen_ids.size()):
+                self.seen_ids[i] = 0
+            self.seen_generation = 1
+
+        self.local_tree_roots.clear()
+        self.local_tree_hyperplanes.clear()
+        self.internal_candidates.items.clear()
+        self.internal_candidates.items.reserve(n)
+
+
 
 ### The Ben zone
 
@@ -119,7 +163,8 @@ cdef inline void normalize_vector(float[::1] vec, unsigned int dim) noexcept nog
         for i in range(dim):
             vec[i] /= norm
 
-cpdef query_all_mtq(float[::1] x, float[:, ::1] X, list trees, unsigned int n, unsigned int warmup):
+cpdef query_all_mtq(float[::1] x, float[:, ::1] X, list trees, unsigned int n, unsigned int warmup,
+                    MTQWorkspace workspace=None):
     """
     Return approximate nearest neighbours to point x from the model.
     Uses the MTQ technique.
@@ -130,33 +175,50 @@ cpdef query_all_mtq(float[::1] x, float[:, ::1] X, list trees, unsigned int n, u
     cdef bint centroid_active = False
 
     cdef cnp.ndarray[int, ndim=1] result
-    cdef vector[unsigned char] seen_ids
-    cdef vector[Node*] local_tree_roots
-    cdef vector[Hyperplanes*] local_tree_hyperplanes
+    cdef vector[unsigned int] *seen_ids
+    cdef vector[Node*] *local_tree_roots
+    cdef vector[Hyperplanes*] *local_tree_hyperplanes
     cdef Tree tree
 
-    cdef CandidateHeap internal_candidates
-    cdef cnp.ndarray[cnp.float32_t, ndim=1] q_prime = np.copy(x)
-    cdef float[::1] q_prime_view = q_prime
-    cdef cnp.ndarray[cnp.float32_t, ndim=1] centroid_sum = np.zeros_like(q_prime)
-    cdef float[::1] centroid_sum_view = centroid_sum
-    cdef cnp.ndarray[cnp.float32_t, ndim=1] q_normalized = np.empty_like(q_prime)
-    cdef float[::1] q_normalized_view = q_normalized
+    cdef CandidateHeap *internal_candidates
+    cdef cnp.ndarray[cnp.float32_t, ndim=1] q_prime
+    cdef float[::1] q_prime_view
+    cdef cnp.ndarray[cnp.float32_t, ndim=1] centroid_sum
+    cdef float[::1] centroid_sum_view
+    cdef cnp.ndarray[cnp.float32_t, ndim=1] q_normalized
+    cdef float[::1] q_normalized_view
+    cdef unsigned int seen_generation
 
     if n == 0:
         return np.empty(0, dtype=np.int32)
 
     dim = X.shape[1]
     no_trees = len(trees)
-    seen_ids.resize(X.shape[0], 0)
+    if workspace is None:
+        workspace = MTQWorkspace()
+    workspace.ensure(dim, X.shape[0], n)
+
+    q_prime = workspace.q_prime
+    centroid_sum = workspace.centroid_sum
+    q_normalized = workspace.q_normalized
+    q_prime_view = q_prime
+    centroid_sum_view = centroid_sum
+    q_normalized_view = q_normalized
+    q_prime_view[:] = x
+    centroid_sum_view[:] = 0.0
+    seen_generation = workspace.seen_generation
+
+    seen_ids = &workspace.seen_ids
+    local_tree_roots = &workspace.local_tree_roots
+    local_tree_hyperplanes = &workspace.local_tree_hyperplanes
+    internal_candidates = &workspace.internal_candidates
+
     local_tree_roots.reserve(no_trees)
     local_tree_hyperplanes.reserve(no_trees)
     for i in range(no_trees):
         tree = trees[i]
-        local_tree_roots.push_back(tree.root)
-        local_tree_hyperplanes.push_back(tree.hyperplanes)
-
-    internal_candidates.items.reserve(n)
+        local_tree_roots[0].push_back(tree.root)
+        local_tree_hyperplanes[0].push_back(tree.hyperplanes)
 
     # Entire loop now runs in nogil context
     with nogil:
@@ -166,21 +228,21 @@ cpdef query_all_mtq(float[::1] x, float[:, ::1] X, list trees, unsigned int n, u
             normalize_vector(q_normalized_view, dim)
 
             if centroid_active:
-                _get_candidates_at_tree_i_nogil(q_normalized_view, x, X, local_tree_roots[i], local_tree_hyperplanes[i], dim, n, &seen_ids, q_prime_view, &internal_candidates)
+                _get_candidates_at_tree_i_nogil(q_normalized_view, x, X, local_tree_roots[0][i], local_tree_hyperplanes[0][i], dim, n, seen_ids, seen_generation, q_prime_view, internal_candidates)
             else:
-                _get_candidates_at_tree_i_nogil(q_normalized_view, x, X, local_tree_roots[i], local_tree_hyperplanes[i], dim, n, &seen_ids, centroid_sum_view, &internal_candidates)
+                _get_candidates_at_tree_i_nogil(q_normalized_view, x, X, local_tree_roots[0][i], local_tree_hyperplanes[0][i], dim, n, seen_ids, seen_generation, centroid_sum_view, internal_candidates)
 
             if i >= warmup and not centroid_active:
                 q_prime_view[:] = centroid_sum_view
                 centroid_active = True
     
-    no_returns = min(n, internal_candidates.items.size())
+    no_returns = min(n, internal_candidates[0].items.size())
     result = np.empty(no_returns, dtype=np.int32)
 
     i = 0
-    sort(internal_candidates.items.begin(), internal_candidates.items.end())
+    sort(internal_candidates[0].items.begin(), internal_candidates[0].items.end())
 
-    for candidate in internal_candidates.items:
+    for candidate in internal_candidates[0].items:
         if i >= no_returns:
             break
         result[i] = candidate.second
@@ -197,7 +259,8 @@ cdef void _get_candidates_at_tree_i_nogil(float[::1] q_prime,
                                 Hyperplanes *hyperplanes,
                                 int dim,
                                 unsigned int n,
-                                vector[unsigned char] *seen_ids,
+                                vector[unsigned int] *seen_ids,
+                                unsigned int seen_generation,
                                 float[::1] centroid_sum,
                                 CandidateHeap *internal_candidates) noexcept nogil:
     """
@@ -209,7 +272,7 @@ cdef void _get_candidates_at_tree_i_nogil(float[::1] q_prime,
 
     leaf = query(root, hyperplanes, q_prime)
 
-    sort_candidates_mtq(original_query, X, dim, n, leaf.indices, seen_ids, centroid_sum, internal_candidates)
+    sort_candidates_mtq(original_query, X, dim, n, leaf.indices, seen_ids, seen_generation, centroid_sum, internal_candidates)
 
 cdef void _get_candidates_at_tree_i(float[::1] q_prime,
                                 float[::1] original_query,
@@ -217,7 +280,8 @@ cdef void _get_candidates_at_tree_i(float[::1] q_prime,
                                 Tree tree,
                                 int dim,
                                 unsigned int n,
-                                vector[unsigned char] *seen_ids,
+                                vector[unsigned int] *seen_ids,
+                                unsigned int seen_generation,
                                 float[::1] centroid_sum,
                                 CandidateHeap *internal_candidates) noexcept nogil:
     """
@@ -231,7 +295,7 @@ cdef void _get_candidates_at_tree_i(float[::1] q_prime,
     root = tree.root
     leaf = query(root, tree.hyperplanes, q_prime)
 
-    sort_candidates_mtq(original_query, X, dim, n, leaf.indices, seen_ids, centroid_sum, internal_candidates)
+    sort_candidates_mtq(original_query, X, dim, n, leaf.indices, seen_ids, seen_generation, centroid_sum, internal_candidates)
 
 cdef void sort_candidates_mtq(
                                 float[::1] original_query,
@@ -239,7 +303,8 @@ cdef void sort_candidates_mtq(
                                 unsigned int dim,
                                 unsigned int n,
                                 vector[int] *candidates,
-                                vector[unsigned char] *seen_ids,
+                                vector[unsigned int] *seen_ids,
+                                unsigned int seen_generation,
                                 float[::1] centroid_sum,
                                 CandidateHeap *internal_candidates) noexcept nogil:
     """
@@ -260,7 +325,7 @@ cdef void sort_candidates_mtq(
 
         # Candidate IDs are dense row indices, so a direct-address mark is
         # cheaper than hashing every candidate.
-        if deref(seen_ids)[idx] == 0:
+        if deref(seen_ids)[idx] != seen_generation:
             row = &X[idx, 0]
 
             # If this is smaller than our frutherst thing or we don't have enough points
@@ -281,7 +346,7 @@ cdef void sort_candidates_mtq(
                         &centroid_sum[0], row, removed_row, dim
                     )
 
-            deref(seen_ids)[idx] = 1
+            deref(seen_ids)[idx] = seen_generation
     
 ### End Ben zone
 
